@@ -53,13 +53,13 @@ fair process Timer = "timer"
 begin
     NextRound:
         while (CurrentRound < NumRounds) do
-            \* await(\A n \in Nodes \E m \in Msgs : (m.round = CurrentRound) /\ (m.sender = n));
-            \* await(\A m \in Msgs : (m.round = CurrentRound) => (m.received = Nodes));
+            await(\A s \in Nodes : \E m \in Msgs : (m.round = CurrentRound) /\ (m.sender = s));
+            await(\A m \in Msgs : (m.round = CurrentRound) => (m.received = Nodes));
             CurrentRound := CurrentRound + 1;
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "41902a4b" /\ chksum(tla) = "7da3ad46")
+\* BEGIN TRANSLATION (chksum(pcal) = "9e77bc30" /\ chksum(tla) = "a52ccf69")
 VARIABLES Msgs, CurrentRound, pc, i
 
 vars == << Msgs, CurrentRound, pc, i >>
@@ -100,7 +100,9 @@ n(self) == Send(self) \/ Receive(self)
 
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF (CurrentRound < NumRounds)
-                   THEN /\ CurrentRound' = CurrentRound + 1
+                   THEN /\ (\A s \in Nodes : \E m \in Msgs : (m.round = CurrentRound) /\ (m.sender = s))
+                        /\ (\A m \in Msgs : (m.round = CurrentRound) => (m.received = Nodes))
+                        /\ CurrentRound' = CurrentRound + 1
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED CurrentRound
@@ -128,9 +130,10 @@ TypeInvariant == \A m \in Msgs : m \in Messages
 
 NodePerms == Permutations(Nodes)
 
-AllMessagesReceived == \A m \in Msgs : m.received = Nodes
+AllSendersInPastRounds == \A r \in 0..(CurrentRound - 1) : \A s \in Nodes :
+        \E m \in Msgs : m.round = r /\ m.sender = s
 
-AllMessagesEventuallyReceived == <>(AllMessagesReceived)
+AllPastMessageReceived == \A m \in {m \in Msgs : m.round < CurrentRound} : m.received = Nodes
 
 =============================================================================
 \* Modification History

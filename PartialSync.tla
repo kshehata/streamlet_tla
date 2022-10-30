@@ -40,7 +40,7 @@ begin
         i := i + 1;
     Receive:
         while (i > CurrentRound) do
-            with m \in { m \in Msgs : m.round = CurrentRound } do
+            with m \in { m \in Msgs : m.round <= CurrentRound } do
                 ReceiveMessage(m);
             end with;
         end while;
@@ -54,12 +54,14 @@ begin
     NextRound:
         while (CurrentRound < NumRounds) do
             await(\A s \in Nodes : \E m \in Msgs : (m.round = CurrentRound) /\ (m.sender = s));
-            await(\A m \in Msgs : (m.round = CurrentRound) => (m.received = Nodes));
+            if (CurrentRound >= GlobalStabTime) then
+                await(\A m \in Msgs : (m.round <= CurrentRound) => (m.received = Nodes));
+            end if;
             CurrentRound := CurrentRound + 1;
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "9e77bc30" /\ chksum(tla) = "a52ccf69")
+\* BEGIN TRANSLATION (chksum(pcal) = "16c168f9" /\ chksum(tla) = "32b20868")
 VARIABLES Msgs, CurrentRound, pc, i
 
 vars == << Msgs, CurrentRound, pc, i >>
@@ -86,7 +88,7 @@ Send(self) == /\ pc[self] = "Send"
 
 Receive(self) == /\ pc[self] = "Receive"
                  /\ IF (i[self] > CurrentRound)
-                       THEN /\ \E m \in { m \in Msgs : m.round = CurrentRound }:
+                       THEN /\ \E m \in { m \in Msgs : m.round <= CurrentRound }:
                                  Msgs' = ((Msgs \ {m}) \union
                                           { [m EXCEPT !.received = m.received \union {self}] })
                             /\ pc' = [pc EXCEPT ![self] = "Receive"]
@@ -101,7 +103,9 @@ n(self) == Send(self) \/ Receive(self)
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF (CurrentRound < NumRounds)
                    THEN /\ (\A s \in Nodes : \E m \in Msgs : (m.round = CurrentRound) /\ (m.sender = s))
-                        /\ (\A m \in Msgs : (m.round = CurrentRound) => (m.received = Nodes))
+                        /\ IF (CurrentRound >= GlobalStabTime)
+                              THEN /\ (\A m \in Msgs : (m.round <= CurrentRound) => (m.received = Nodes))
+                              ELSE /\ TRUE
                         /\ CurrentRound' = CurrentRound + 1
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
@@ -133,7 +137,7 @@ NodePerms == Permutations(Nodes)
 AllSendersInPastRounds == \A r \in 0..(CurrentRound - 1) : \A s \in Nodes :
         \E m \in Msgs : m.round = r /\ m.sender = s
 
-AllPastMessageReceived == \A m \in {m \in Msgs : m.round < CurrentRound} : m.received = Nodes
+AllPastMessageReceived == (CurrentRound > GlobalStabTime) => \A m \in {m \in Msgs : m.round < CurrentRound} : m.received = Nodes
 
 =============================================================================
 \* Modification History

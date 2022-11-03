@@ -262,7 +262,8 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION 
 
-TypeInvariant == \A m \in messages : m \in Messages
+TypeInvariant == /\ \A m \in messages : m \in Messages
+                 /\ \A n \in Nodes : \A b \in localBlocks[n] : b \in Blocks
 
 \* Not really liveness, just check that all nodes got block 1
 \* Only works if network is synchronous

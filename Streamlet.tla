@@ -49,6 +49,22 @@ NotarizedBlocks(blocks) == { b \in blocks : IsNotarized(b) }
 LongestNotarizedBlocks(blocks) ==
     LET notarized == NotarizedBlocks(blocks)
     IN { b \in notarized : \A c \in notarized : b.length >= c.length }
+
+IsParent(parent, child) ==
+    /\ child.parent = parent.epoch
+    /\ child.length = parent.length + 1
+    /\ child.epoch > parent.epoch
+
+RECURSIVE IsFinalized(_,_)
+IsFinalized(block, notarized) ==
+    \/
+        /\ \E parent \in notarized: parent.epoch = block.epoch - 1 /\ IsParent(parent, block)
+        /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child)
+    \/
+        /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child) /\ IsFinalized(child, notarized)
+
+FinalizedBlocks(blocks) == { b \in blocks: IsFinalized(b, NotarizedBlocks(blocks)) }
+
 (***************************************************************************)
 
 \* Updates a set of blocks with signatures from a given block

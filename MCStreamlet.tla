@@ -1,11 +1,11 @@
 ---- MODULE MCStreamlet ----
 EXTENDS Streamlet, TLC
 
-CONSTANTS n1, n2, n3
+CONSTANTS n1, n2, n3, n4
 
-ConstNodes == {n1, n2, n3}
-
-ConstCorrupt == {n3}
+ConstCorrectNodes == {n1, n2, n3}
+ConstFaultyNodes == {n4}
+NodePerms == Permutations(ConstCorrectNodes) \cup Permutations(ConstFaultyNodes)
 
 ConstLeaders == <<n1>>
 

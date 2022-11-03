@@ -5,14 +5,14 @@ EXTENDS Integers, Sequences, FiniteSets
 Maximum(S) == IF S = {} THEN -1
                         ELSE CHOOSE n \in S : \A m \in S : n \geq m
                         
-CONSTANT Nodes,     \* Set of nodes in the system
-         Corrupt,   \* Set of corrupt nodes
-         Leaders    \* Sequence of leaders in each epoch
-         
+CONSTANT CorrectNodes,  \* Nodes assumed to be correct ("honest")
+         FaultyNodes,   \* Set of faulty ("corrupt") nodes
+         Leaders        \* Sequence of leaders in each epoch
 
-ASSUME Leaders \in Seq(Nodes) /\ Corrupt \subseteq Nodes
+Nodes == CorrectNodes \cup FaultyNodes
+ASSUME Leaders \in Seq(Nodes) /\ FaultyNodes \subseteq Nodes
 
-NotarizedThreshold == Cardinality(Nodes) - Cardinality(Corrupt)
+NotarizedThreshold == Cardinality(Nodes) - Cardinality(FaultyNodes)
 
 (***************************************************************************)
 (* Defines blocks and operations on blocks                                 *)

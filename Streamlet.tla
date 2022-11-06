@@ -18,32 +18,34 @@ NotarizedThreshold == Cardinality(Nodes) - Cardinality(FaultyNodes)
 (***************************************************************************)
 (* Defines blocks and operations on blocks                                 *)
 (***************************************************************************)
-Blocks == [ \* Blocks are represented as the epoch number they belong.
-            epoch : Nat,
-            \* Parents are referenced by epoch number as well.
-            parent : Nat,
-            \* Length is the length of the chain from genesis that leads to this block.
-            length : Nat,
-            \* Representation of signatures on the block
-            sigs : SUBSET(Nodes)
-          ]
+BlockType == [ 
+        \* Unique identifier for each block.
+        id: Nat,
+        \* The epoch number they belong.
+        epoch : Nat,
+        \* Parents are referenced by their id as well.
+        parent : Nat,
+        \* Length is the length of the chain from genesis that leads to this block.
+        length : Nat,
+        \* Representation of signatures on the block
+        sigs : SUBSET(Nodes)
+    ]
 
-CreateBlock(epoch, parent, length, n) == [
+CreateBlock(id, epoch, parent, creator) == [
+        id |-> id,
         epoch |-> epoch,
-        parent |-> parent,
-        length |-> length,
-        sigs |-> {n}
+        parent |-> parent.id,
+        length |-> parent.length + 1,
+        sigs |-> {creator}
     ]
 
 GenesisBlock == [
+        id |-> 0,
         epoch |-> 0,
         parent |-> 0,
         length |-> 0,
         sigs |-> Nodes
     ]
-
-ExtendBlock(epoch, block, node) ==
-    CreateBlock(epoch, block.epoch, block.length + 1, node)
 
 SignBlock(block, node) ==
     [block EXCEPT !.sigs = block.sigs \union {node}]
@@ -57,7 +59,7 @@ LongestNotarizedBlocks(blocks) ==
     IN { b \in notarized : \A c \in notarized : b.length >= c.length }
 
 IsParent(parent, child) ==
-    /\ child.parent = parent.epoch
+    /\ child.parent = parent.id
     /\ child.length = parent.length + 1
     /\ child.epoch > parent.epoch
 
@@ -75,14 +77,14 @@ FinalizedBlocks(blocks) == { b \in blocks: IsFinalized(b, NotarizedBlocks(blocks
 
 \* Updates a set of blocks with signatures from a given block
 UpdateLocalState(localState, m) ==
-  LET b == CHOOSE b \in localState : b.epoch = m.epoch
-  IN (localState \ {b}) \union { [ b EXCEPT !.sigs = b.sigs \union m.sigs ] }
+    LET b == CHOOSE b \in localState : b.epoch = m.epoch
+    IN (localState \ {b}) \union { [ b EXCEPT !.sigs = b.sigs \union m.sigs ] }
 
 (***************************************************************************)
 (* Messages as just blocks with metadata                                   *)
 (***************************************************************************)
-Messages == [
-    block : Blocks,
+MessageType == [
+    block : BlockType,
     received : SUBSET(Nodes)
 ]
 (***************************************************************************)
@@ -91,6 +93,7 @@ Messages == [
 variables
     messages = { };
     currentEpoch = 1;
+    nextBlockId = 1;
 
 macro SendMessage(b) begin
     messages := messages \union {[
@@ -112,137 +115,161 @@ end macro
 
 fair process replica \in Nodes
 variables
-    i = 1;
-    localBlocks = {GenesisBlock};
+    localEpoch = currentEpoch;
+    localBlocks = {GenesisBlock}; \* blocks that I have seen
 begin
-  Start:
-    if Leaders[currentEpoch] = self then
-        \* Propose a new block
-        with
-            parent \in LongestNotarizedBlocks(localBlocks),
-            newBlock = ExtendBlock(currentEpoch, parent, self)
-        do
-            SendMessage(newBlock);
-            localBlocks := localBlocks \union { newBlock };
-        end with;
-    end if;
-    i := i + 1;
+    Start:
+        if Leaders[localEpoch] = self then
+            \* Propose a new block
+            with
+                parent \in LongestNotarizedBlocks(localBlocks),
+                newBlock = CreateBlock(nextBlockId, localEpoch, parent, self)
+            do
+                SendMessage(newBlock);
+                localBlocks := localBlocks \union { newBlock };
+            end with;
+            nextBlockId := nextBlockId + 1;
+        end if;
 
-  ReplicaReceive:
-    while (i > currentEpoch) do
-        with m \in messages, b = m.block do
-            if b.epoch \in { l.epoch : l \in localBlocks } then
-                \* Already seen this block, just update it
-                \* TODO: check length and parent correct ?
-                \* TODO: need to check that current epoch can be signed ?
-                ReceiveMessage(m);
-                localBlocks := UpdateLocalState(localBlocks, b);
-            else
-            if  /\ b.epoch = currentEpoch
-                /\ Leaders[currentEpoch] \in b.sigs
-                /\ b.parent \in { l.epoch : l \in LongestNotarizedBlocks(localBlocks) } then
-                \* TODO: check that length is correct
-                \* Correctly extends local longest chain
-                with signedBlock = SignBlock(b, self) do
-                    ReceiveAndSend(m, signedBlock);
-                    localBlocks := localBlocks \union {signedBlock};
-                end with;
-            else
-                \* can't sign block, so just add it to local state
-                ReceiveMessage(m);
-                localBlocks := localBlocks \union { b }
-            end if;
-            end if;
-        end with;
-    end while;
-    if (i < Len(Leaders) + 1) then
-        goto Start;
-    end if
+    ReplicaReceive:
+        while localEpoch = currentEpoch do
+            with 
+                m \in {m \in messages: self \notin m.received}, 
+                b = m.block 
+            do
+                if b.id \in { l.id : l \in localBlocks } then
+                    \* Already seen this block, just update the other new votes on it
+                    ReceiveMessage(m); 
+                    localBlocks := UpdateLocalState(localBlocks, b);
+                elsif  
+                    /\ b.epoch = localEpoch
+                    /\ Leaders[localEpoch] \in b.sigs
+                    /\ b.epoch \notin { l.epoch: l \in localBlocks }
+                    /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks) } then
+                    with 
+                        parent = CHOOSE l \in LongestNotarizedBlocks(localBlocks): b.parent = l.id,
+                        signedBlock = SignBlock(b, self)
+                    do
+                        if (b.length = parent.length + 1) /\ (b.epoch > parent.epoch) then 
+                            \* vote for correct new block and add to localBlocks
+                            ReceiveAndSend(m, signedBlock);
+                            localBlocks := localBlocks \union {signedBlock};
+                        else
+                            \* correct leader, correct epoch, correct parent, but incorrect height or epoch field
+                            ReceiveMessage(m); 
+                            localBlocks := localBlocks \union { b }
+                        end if;                        
+                    end with;
+                else
+                    \* case 1: haven't seen, but the block is for past or future epoch
+                    \* case 2: haven't seen, block for the current epoch, but from the wrong leader
+                    \* case 3: haven't seen, block for the current epoch, from the right leader, but already voted for an eariler block by him
+                    \* case 4: haven't seen, current epoch, right leader, haven't voted, but conflicting parent 
+                    ReceiveMessage(m); 
+                    localBlocks := localBlocks \union { b }
+                end if;
+            end with;
+        end while;
+        localEpoch := localEpoch + 1;
+        if localEpoch <= Len(Leaders) then
+            goto Start;
+        end if
 end process;
 
 
 fair process Timer = "timer"
 begin
     NextRound:
-        while (currentEpoch < Len(Leaders) + 1) do
-            await(\E m \in messages : (m.block.epoch = currentEpoch /\ Leaders[currentEpoch] \in m.block.sigs));
-            if (currentEpoch >= GlobalStabTime) then
-                await(\A m \in messages : (m.block.epoch <= currentEpoch) => (m.received = Nodes));
+        while currentEpoch <= Len(Leaders) do
+            \* NOTE: even adversary leader need to send something to indicate some time has elapsed in this round
+            await (\E m \in messages : (m.block.epoch = currentEpoch /\ Leaders[currentEpoch] \in m.block.sigs));
+            if currentEpoch >= GlobalStabTime then
+                await (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received));
             end if;
             currentEpoch := currentEpoch + 1;
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "b8667e3e" /\ chksum(tla) = "b73250de")
-VARIABLES messages, currentEpoch, pc, i, localBlocks
+\* BEGIN TRANSLATION (chksum(pcal) = "45fa7d68" /\ chksum(tla) = "f718e09b")
+VARIABLES messages, currentEpoch, nextBlockId, pc, localEpoch, localBlocks
 
-vars == << messages, currentEpoch, pc, i, localBlocks >>
+vars == << messages, currentEpoch, nextBlockId, pc, localEpoch, localBlocks
+        >>
 
 ProcSet == (Nodes) \cup {"timer"}
 
 Init == (* Global variables *)
         /\ messages = { }
         /\ currentEpoch = 1
+        /\ nextBlockId = 1
         (* Process replica *)
-        /\ i = [self \in Nodes |-> 1]
+        /\ localEpoch = [self \in Nodes |-> currentEpoch]
         /\ localBlocks = [self \in Nodes |-> {GenesisBlock}]
         /\ pc = [self \in ProcSet |-> CASE self \in Nodes -> "Start"
                                         [] self = "timer" -> "NextRound"]
 
 Start(self) == /\ pc[self] = "Start"
-               /\ IF Leaders[currentEpoch] = self
+               /\ IF Leaders[localEpoch[self]] = self
                      THEN /\ \E parent \in LongestNotarizedBlocks(localBlocks[self]):
-                               LET newBlock == ExtendBlock(currentEpoch, parent, self) IN
+                               LET newBlock == CreateBlock(nextBlockId, localEpoch[self], parent, self) IN
                                  /\ messages' = (            messages \union {[
                                                      block |-> newBlock,
                                                      received |-> {self}
                                                  ]})
                                  /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { newBlock }]
+                          /\ nextBlockId' = nextBlockId + 1
                      ELSE /\ TRUE
-                          /\ UNCHANGED << messages, localBlocks >>
-               /\ i' = [i EXCEPT ![self] = i[self] + 1]
+                          /\ UNCHANGED << messages, nextBlockId, localBlocks >>
                /\ pc' = [pc EXCEPT ![self] = "ReplicaReceive"]
-               /\ UNCHANGED currentEpoch
+               /\ UNCHANGED << currentEpoch, localEpoch >>
 
 ReplicaReceive(self) == /\ pc[self] = "ReplicaReceive"
-                        /\ IF (i[self] > currentEpoch)
-                              THEN /\ \E m \in messages:
+                        /\ IF localEpoch[self] = currentEpoch
+                              THEN /\ \E m \in {m \in messages: self \notin m.received}:
                                         LET b == m.block IN
-                                          IF b.epoch \in { l.epoch : l \in localBlocks[self] }
+                                          IF b.id \in { l.id : l \in localBlocks[self] }
                                              THEN /\ messages' = (        (messages \ {m}) \union
                                                                   {[m EXCEPT !.received = m.received \union {self}]})
                                                   /\ localBlocks' = [localBlocks EXCEPT ![self] = UpdateLocalState(localBlocks[self], b)]
-                                             ELSE /\ IF /\ b.epoch = currentEpoch
-                                                        /\ Leaders[currentEpoch] \in b.sigs
-                                                        /\ b.parent \in { l.epoch : l \in LongestNotarizedBlocks(localBlocks[self]) }
-                                                        THEN /\ LET signedBlock == SignBlock(b, self) IN
-                                                                  /\ messages' = (        (messages \ {m}) \union
-                                                                                  {[m EXCEPT !.received = m.received \union {self}]}
-                                                                                  \union {[ block |-> signedBlock, received |-> {self}]})
-                                                                  /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
+                                             ELSE /\ IF /\ b.epoch = localEpoch[self]
+                                                        /\ Leaders[localEpoch[self]] \in b.sigs
+                                                        /\ b.epoch \notin { l.epoch: l \in localBlocks[self] }
+                                                        /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks[self]) }
+                                                        THEN /\ LET parent == CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.id IN
+                                                                  LET signedBlock == SignBlock(b, self) IN
+                                                                    IF (b.length = parent.length + 1) /\ (b.epoch > parent.epoch)
+                                                                       THEN /\ messages' = (        (messages \ {m}) \union
+                                                                                            {[m EXCEPT !.received = m.received \union {self}]}
+                                                                                            \union {[ block |-> signedBlock, received |-> {self}]})
+                                                                            /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
+                                                                       ELSE /\ messages' = (        (messages \ {m}) \union
+                                                                                            {[m EXCEPT !.received = m.received \union {self}]})
+                                                                            /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
                                                         ELSE /\ messages' = (        (messages \ {m}) \union
                                                                              {[m EXCEPT !.received = m.received \union {self}]})
                                                              /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
                                    /\ pc' = [pc EXCEPT ![self] = "ReplicaReceive"]
-                              ELSE /\ IF (i[self] < Len(Leaders) + 1)
+                                   /\ UNCHANGED localEpoch
+                              ELSE /\ localEpoch' = [localEpoch EXCEPT ![self] = localEpoch[self] + 1]
+                                   /\ IF localEpoch'[self] <= Len(Leaders)
                                          THEN /\ pc' = [pc EXCEPT ![self] = "Start"]
                                          ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                                    /\ UNCHANGED << messages, localBlocks >>
-                        /\ UNCHANGED << currentEpoch, i >>
+                        /\ UNCHANGED << currentEpoch, nextBlockId >>
 
 replica(self) == Start(self) \/ ReplicaReceive(self)
 
 NextRound == /\ pc["timer"] = "NextRound"
-             /\ IF (currentEpoch < Len(Leaders) + 1)
+             /\ IF currentEpoch <= Len(Leaders)
                    THEN /\ (\E m \in messages : (m.block.epoch = currentEpoch /\ Leaders[currentEpoch] \in m.block.sigs))
-                        /\ IF (currentEpoch >= GlobalStabTime)
-                              THEN /\ (\A m \in messages : (m.block.epoch <= currentEpoch) => (m.received = Nodes))
+                        /\ IF currentEpoch >= GlobalStabTime
+                              THEN /\ (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received))
                               ELSE /\ TRUE
                         /\ currentEpoch' = currentEpoch + 1
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED currentEpoch
-             /\ UNCHANGED << messages, i, localBlocks >>
+             /\ UNCHANGED << messages, nextBlockId, localEpoch, localBlocks >>
 
 Timer == NextRound
 
@@ -262,11 +289,25 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION 
 
-TypeInvariant == /\ \A m \in messages : m \in Messages
-                 /\ \A n \in Nodes : \A b \in localBlocks[n] : b \in Blocks
+TypeInvariant == /\ \A m \in messages : m \in MessageType
+                 /\ \A n \in Nodes : \A b \in localBlocks[n] : b \in BlockType
+
+MonoIncEpoch == [][currentEpoch' = currentEpoch + 1]_currentEpoch
+LocalEpochCorrectness == [](\A r \in CorrectNodes: localEpoch[r] = currentEpoch \/ localEpoch[r] = currentEpoch - 1)
+NoDoubleVotePerEpoch ==[](
+    \A r \in CorrectNodes:
+        \A e \in 0..currentEpoch:
+            LET voted == {b \in localBlocks[r]: b.epoch = e /\ r \in b.sigs }
+            IN Cardinality(voted) <= 1
+)
+
+PartialSynchrony == 
+    \/ currentEpoch <= GlobalStabTime
+    \/ \A m \in messages: (m.block.epoch = currentEpoch \/ CorrectNodes \subseteq m.received)
 
 \* Not really liveness, just check that all nodes got block 1
 \* Only works if network is synchronous
+\* TODO: fix this
 Liveness == <>(
     \A n \in Nodes :
         \E b \in localBlocks[n] :

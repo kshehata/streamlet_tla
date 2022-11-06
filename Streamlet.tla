@@ -2,7 +2,7 @@
 
 EXTENDS Integers, Sequences, FiniteSets
 
-Maximum(S) == IF S = {} THEN -1
+Maximum(S) == IF S = {} THEN 0
                         ELSE CHOOSE n \in S : \A m \in S : n \geq m
                         
 CONSTANT CorrectNodes,  \* Nodes assumed to be correct ("honest")
@@ -66,13 +66,36 @@ IsParent(parent, child) ==
 RECURSIVE IsFinalized(_,_)
 IsFinalized(block, notarized) ==
     \/
+        /\ block \in notarized
         /\ \E parent \in notarized: parent.epoch = block.epoch - 1 /\ IsParent(parent, block)
         /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child)
     \/
         /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child) /\ IsFinalized(child, notarized)
+    \/  block = GenesisBlock
 
 FinalizedBlocks(blocks) == { b \in blocks: IsFinalized(b, NotarizedBlocks(blocks)) }
 
+CheckBlockchain(blocks) ==
+    LET maxLen == Maximum({ b.length: b \in blocks })
+    IN
+        /\ \A h \in 0..maxLen: Cardinality({ b \in blocks: b.length = h }) = 1
+        /\ Cardinality(blocks) = maxLen + 1
+        /\ GenesisBlock \in blocks
+        /\ \A b \in (blocks \ {GenesisBlock}): \E parent \in blocks: IsParent(parent, b)
+
+IsPrefixedChain(shortChain, longChain) ==
+    LET shortLen == Maximum({ b.length: b \in shortChain })
+        longLen == Maximum({ b.length: b \in longChain })
+    IN
+        /\ CheckBlockchain(shortChain)
+        /\ CheckBlockchain(longChain)
+        /\ shortLen <= longLen
+        /\ \A b \in shortChain: \E b2 \in longChain:
+                /\ b.id = b2.id 
+                /\ b.epoch = b2.epoch 
+                /\ b.length = b2.length
+                /\ b.parent = b2.parent
+                
 (***************************************************************************)
 
 \* Updates a set of blocks with signatures from a given block
@@ -304,6 +327,16 @@ NoDoubleVotePerEpoch ==[](
 PartialSynchrony == 
     \/ currentEpoch <= GlobalStabTime
     \/ \A m \in messages: (m.block.epoch = currentEpoch \/ CorrectNodes \subseteq m.received)
+
+Consistency == [](
+    \A r1, r2 \in CorrectNodes:
+        r1 # r2 => 
+            LET chain1 == FinalizedBlocks(localBlocks[r1])
+                chain2 == FinalizedBlocks(localBlocks[r2])
+            IN
+                \/ IsPrefixedChain(chain1, chain2)
+                \/ IsPrefixedChain(chain2, chain1)
+)
 
 \* Not really liveness, just check that all nodes got block 1
 \* Only works if network is synchronous

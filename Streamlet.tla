@@ -94,11 +94,6 @@ IsPrefixedChain(shortChain, longChain) ==
                 
 (***************************************************************************)
 
-\* Updates a set of blocks with signatures from a given block
-UpdateLocalState(localState, m) ==
-    LET b == CHOOSE b \in localState : b.epoch = m.epoch
-    IN (localState \ {b}) \union { [ b EXCEPT !.sigs = b.sigs \union m.sigs ] }
-
 (***************************************************************************)
 (* Messages as just blocks with metadata                                   *)
 (***************************************************************************)
@@ -146,6 +141,16 @@ macro ReceiveAndSend(receivedMsg, blockToSend) begin
         \union {[ block |-> blockToSend, received |-> {self}]};
 end macro
 
+macro UpdateLocalBlocks(localBlocks, block) begin
+    if \E lb \in localBlocks: lb.id = block.id then 
+        with lb = CHOOSE lb \in localBlocks: lb.id = block.id do 
+            localBlocks := (localBlocks \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union block.sigs]}
+        end with
+    else 
+        localBlocks := localBlocks \union {block}
+    end if
+end macro
+
 fair process honest \in CorrectNodes
 variables
     localBlocks = {GenesisBlock}; \* blocks that I have seen
@@ -159,7 +164,7 @@ begin
                 \* Propose a new block
                 CreateBlock(localEpoch, parent, self);
                 SendMessage(newBlock);
-                localBlocks := localBlocks \union { newBlock };
+                UpdateLocalBlocks(localBlocks, newBlock);
             end if;
         end with;
     ReceiveOrSyncEpoch:
@@ -168,12 +173,7 @@ begin
                 m \in {m \in messages: self \notin m.received}, 
                 b = m.block 
             do
-                if b.id \in { l.id : l \in localBlocks } then
-                    \* Already seen this block, just update the other new votes on it
-                    ReceiveMessage(m); 
-                    localBlocks := UpdateLocalState(localBlocks, b);
-                elsif  
-                    /\ b.epoch = currentEpoch
+                if  /\ b.epoch = currentEpoch
                     /\ Leaders[currentEpoch] \in b.sigs
                     /\ b.epoch \notin { l.epoch: l \in localBlocks }
                     /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks) } then
@@ -184,20 +184,18 @@ begin
                         if (b.length = parent.length + 1) /\ (b.epoch > parent.epoch) then 
                             \* vote for correct new block and add to localBlocks
                             ReceiveAndSend(m, signedBlock);
-                            localBlocks := localBlocks \union {signedBlock};
-                        else
-                            \* correct leader, correct epoch, correct parent, but incorrect height or epoch field
-                            ReceiveMessage(m); 
-                            localBlocks := localBlocks \union { b }
-                        end if;                        
+                            UpdateLocalBlocks(localBlocks, signedBlock);
+                        end if;
                     end with;
                 else
+                    \* case 0: already seen, just update other votes
                     \* case 1: haven't seen, but the block is for past or future epoch
                     \* case 2: haven't seen, block for the current epoch, but from the wrong leader
                     \* case 3: haven't seen, block for the current epoch, from the right leader, but already voted for an eariler block by him
                     \* case 4: haven't seen, current epoch, right leader, haven't voted, but conflicting parent 
+                    \* case 5: haven't seen, correct leader, correct epoch, correct parent, but incorrect height or epoch field
                     ReceiveMessage(m); 
-                    localBlocks := localBlocks \union { b }
+                    UpdateLocalBlocks(localBlocks, b);
                 end if;
             end with;
         end while;
@@ -228,7 +226,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "fc315bb" /\ chksum(tla) = "7ceedf17")
+\* BEGIN TRANSLATION (chksum(pcal) = "669f0670" /\ chksum(tla) = "f7746e99")
 VARIABLES messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
           localBlocks
 
@@ -264,7 +262,10 @@ Propose(self) == /\ pc[self] = "Propose"
                                                     block |-> newBlock',
                                                     received |-> {self}
                                                 ]})
-                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { newBlock' }]
+                                /\ IF \E lb \in localBlocks[self]: lb.id = newBlock'.id
+                                      THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = newBlock'.id IN
+                                                localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union newBlock'.sigs]}]
+                                      ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {newBlock'}]
                            ELSE /\ TRUE
                                 /\ UNCHANGED << messages, nextBlockId, 
                                                 newBlock, localBlocks >>
@@ -275,27 +276,29 @@ ReceiveOrSyncEpoch(self) == /\ pc[self] = "ReceiveOrSyncEpoch"
                             /\ IF localEpochs[self] = currentEpoch
                                   THEN /\ \E m \in {m \in messages: self \notin m.received}:
                                             LET b == m.block IN
-                                              IF b.id \in { l.id : l \in localBlocks[self] }
-                                                 THEN /\ messages' = (        (messages \ {m}) \union
+                                              IF /\ b.epoch = currentEpoch
+                                                 /\ Leaders[currentEpoch] \in b.sigs
+                                                 /\ b.epoch \notin { l.epoch: l \in localBlocks[self] }
+                                                 /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks[self]) }
+                                                 THEN /\ LET parent == CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.id IN
+                                                           LET signedBlock == SignBlock(b, self) IN
+                                                             IF (b.length = parent.length + 1) /\ (b.epoch > parent.epoch)
+                                                                THEN /\ messages' = (        (messages \ {m}) \union
+                                                                                     {[m EXCEPT !.received = m.received \union {self}]}
+                                                                                     \union {[ block |-> signedBlock, received |-> {self}]})
+                                                                     /\ IF \E lb \in localBlocks[self]: lb.id = signedBlock.id
+                                                                           THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = signedBlock.id IN
+                                                                                     localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union signedBlock.sigs]}]
+                                                                           ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
+                                                                ELSE /\ TRUE
+                                                                     /\ UNCHANGED << messages, 
+                                                                                     localBlocks >>
+                                                 ELSE /\ messages' = (        (messages \ {m}) \union
                                                                       {[m EXCEPT !.received = m.received \union {self}]})
-                                                      /\ localBlocks' = [localBlocks EXCEPT ![self] = UpdateLocalState(localBlocks[self], b)]
-                                                 ELSE /\ IF /\ b.epoch = currentEpoch
-                                                            /\ Leaders[currentEpoch] \in b.sigs
-                                                            /\ b.epoch \notin { l.epoch: l \in localBlocks[self] }
-                                                            /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks[self]) }
-                                                            THEN /\ LET parent == CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.id IN
-                                                                      LET signedBlock == SignBlock(b, self) IN
-                                                                        IF (b.length = parent.length + 1) /\ (b.epoch > parent.epoch)
-                                                                           THEN /\ messages' = (        (messages \ {m}) \union
-                                                                                                {[m EXCEPT !.received = m.received \union {self}]}
-                                                                                                \union {[ block |-> signedBlock, received |-> {self}]})
-                                                                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
-                                                                           ELSE /\ messages' = (        (messages \ {m}) \union
-                                                                                                {[m EXCEPT !.received = m.received \union {self}]})
-                                                                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
-                                                            ELSE /\ messages' = (        (messages \ {m}) \union
-                                                                                 {[m EXCEPT !.received = m.received \union {self}]})
-                                                                 /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
+                                                      /\ IF \E lb \in localBlocks[self]: lb.id = b.id
+                                                            THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = b.id IN
+                                                                      localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union b.sigs]}]
+                                                            ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {b}]
                                        /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSyncEpoch"]
                                        /\ UNCHANGED localEpochs
                                   ELSE /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]

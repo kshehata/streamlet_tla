@@ -209,7 +209,14 @@ fair process Timer = "timer"
 begin
     NextRound:
         while currentEpoch <= NumEpochs do
-            await \A r \in Nodes: localEpochs[r] = currentEpoch;
+            with currentLeader = Leaders[currentEpoch] do 
+                await 
+                    /\ \A r \in Nodes: localEpochs[r] = currentEpoch
+                    /\ currentLeader \in CorrectNodes => \E m \in messages:
+                        /\ currentLeader \in m.received
+                        /\ m.block.epoch = currentEpoch
+            end with;
+
             if currentEpoch >= GlobalStabTime then
                 await (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received));
             end if;
@@ -217,7 +224,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "c9105664" /\ chksum(tla) = "ef8284ae")
+\* BEGIN TRANSLATION (chksum(pcal) = "6c6531b5" /\ chksum(tla) = "36f4bc59")
 VARIABLES messages, currentEpoch, localEpochs, nextBlockId, pc, localBlocks
 
 vars == << messages, currentEpoch, localEpochs, nextBlockId, pc, localBlocks
@@ -290,7 +297,11 @@ honest(self) == Propose(self) \/ ReceiveOrSyncEpoch(self)
 
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF currentEpoch <= NumEpochs
-                   THEN /\ \A r \in Nodes: localEpochs[r] = currentEpoch
+                   THEN /\ LET currentLeader == Leaders[currentEpoch] IN
+                             /\ \A r \in Nodes: localEpochs[r] = currentEpoch
+                             /\ currentLeader \in CorrectNodes => \E m \in messages:
+                                 /\ currentLeader \in m.received
+                                 /\ m.block.epoch = currentEpoch
                         /\ IF currentEpoch >= GlobalStabTime
                               THEN /\ (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received))
                               ELSE /\ TRUE
@@ -323,6 +334,14 @@ TypeInvariant == /\ \A m \in messages : m \in MessageType
 
 MonoIncEpoch == [][currentEpoch' = currentEpoch + 1]_currentEpoch
 LocalEpochCorrectness == [](\A r \in Nodes: localEpochs[r] = currentEpoch \/ localEpochs[r] = currentEpoch - 1)
+HonestLeadersShouldPropose == [](
+    \A r \in CorrectNodes: 
+        LET e == localEpochs[r] 
+        IN 
+            (currentEpoch # e /\ Leaders[e] = r) => \E m \in messages:
+                /\ r \in m.received
+                /\ m.block.epoch = e
+)
 NoDoubleVotePerEpoch ==[](
     \A r \in CorrectNodes:
         \A e \in 0..currentEpoch:
@@ -330,9 +349,10 @@ NoDoubleVotePerEpoch ==[](
             IN Cardinality(voted) <= 1
 )
 
-PartialSynchrony == 
+PartialSynchrony == [](
     \/ currentEpoch <= GlobalStabTime
     \/ \A m \in messages: (m.block.epoch = currentEpoch \/ CorrectNodes \subseteq m.received)
+)
 
 Consistency == [](
     \A r1, r2 \in CorrectNodes:

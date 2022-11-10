@@ -5,10 +5,12 @@ EXTENDS Integers, Sequences, FiniteSets
 Maximum(S) == IF S = {} THEN 0
                         ELSE CHOOSE n \in S : \A m \in S : n \geq m
                         
-CONSTANT CorrectNodes,  \* Nodes assumed to be correct ("honest")
-         FaultyNodes,   \* Set of faulty ("corrupt") nodes
-         Leaders,       \* Sequence of leaders in each epoch
-         GlobalStabTime \* Epoch of GST
+CONSTANT 
+    CorrectNodes,   \* Nodes assumed to be correct ("honest")
+    FaultyNodes,    \* Set of faulty ("corrupt") nodes
+    Leaders,        \* Sequence of leaders in each epoch
+    GlobalStabTime, \* Epoch of GST
+    TrustedCreator  \* Model value for genesis block creator 
 
 Nodes == CorrectNodes \cup FaultyNodes
 NumEpochs == Len(Leaders)
@@ -32,7 +34,7 @@ BlockType == [
         \* Length is the length of the chain from genesis that leads to this block.
         length : Nat,
         \* Representation of signatures on the block
-        sigs : SUBSET(Nodes)
+        creator : Nodes \union {TrustedCreator}
     ]
 
 GenesisBlock == [
@@ -40,11 +42,17 @@ GenesisBlock == [
         epoch |-> 0,
         parent |-> 0,
         length |-> 0,
-        sigs |-> Nodes
+        creator |-> TrustedCreator
     ]
 
-SignBlock(block, node) ==
-    [block EXCEPT !.sigs = block.sigs \union {node}]
+\* Structure of localBlocks each replica keep locally
+LocalBlockType == [
+    payload: BlockType,
+    sigs: SUBSET(Nodes)
+]
+
+SignBlock(b, signer) ==
+    [block |-> b, vote |-> signer, received |-> {signer}]
 
 IsNotarized(block) == Cardinality(block.sigs) >= NotarizedThreshold
 
@@ -52,7 +60,7 @@ NotarizedBlocks(blocks) == { b \in blocks : IsNotarized(b) }
 
 LongestNotarizedBlocks(blocks) ==
     LET notarized == NotarizedBlocks(blocks)
-    IN { b \in notarized : \A c \in notarized : b.length >= c.length }
+    IN { b \in notarized : \A c \in notarized : b.payload.length >= c.payload.length }
 
 IsParent(parent, child) ==
     /\ child.parent = parent.id
@@ -63,47 +71,48 @@ RECURSIVE IsFinalized(_,_)
 IsFinalized(block, notarized) ==
     \/
         /\ block \in notarized
-        /\ \E parent \in notarized: parent.epoch = block.epoch - 1 /\ IsParent(parent, block)
-        /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child)
+        /\ \E parent \in notarized: parent.payload.epoch = block.payload.epoch - 1 /\ IsParent(parent.payload, block.payload)
+        /\ \E child \in notarized: child.payload.epoch = block.payload.epoch + 1 /\ IsParent(block.payload, child.payload)
     \/
-        /\ \E child \in notarized: child.epoch = block.epoch + 1 /\ IsParent(block, child) /\ IsFinalized(child, notarized)
-    \/  block = GenesisBlock
+        \E child \in notarized: 
+            /\ child.payload.epoch = block.payload.epoch + 1 
+            /\ IsParent(block.payload, child.payload) 
+            /\ IsFinalized(child, notarized)
+    \/  block.payload = GenesisBlock
 
 FinalizedBlocks(blocks) == { b \in blocks: IsFinalized(b, NotarizedBlocks(blocks)) }
 
 CheckBlockchain(blocks) ==
-    LET maxLen == Maximum({ b.length: b \in blocks })
+    LET 
+        maxLen == Maximum({ b.payload.length: b \in blocks })
+        genesis == [payload |-> GenesisBlock, sigs |-> Nodes]
     IN
-        /\ \A h \in 0..maxLen: Cardinality({ b \in blocks: b.length = h }) = 1
+        /\ \A h \in 0..maxLen: Cardinality({ b \in blocks: b.payload.length = h }) = 1
         /\ Cardinality(blocks) = maxLen + 1
-        /\ GenesisBlock \in blocks
-        /\ \A b \in (blocks \ {GenesisBlock}): \E parent \in blocks: IsParent(parent, b)
+        /\ genesis \in blocks
+        /\ \A b \in (blocks \ {genesis}): \E parent \in blocks: IsParent(parent.payload, b.payload)
 
 IsPrefixedChain(shortChain, longChain) ==
-    LET shortLen == Maximum({ b.length: b \in shortChain })
-        longLen == Maximum({ b.length: b \in longChain })
+    LET shortLen == Maximum({ b.payload.length: b \in shortChain })
+        longLen == Maximum({ b.payload.length: b \in longChain })
     IN
         /\ CheckBlockchain(shortChain)
         /\ CheckBlockchain(longChain)
         /\ shortLen <= longLen
         /\ \A b \in shortChain: \E b2 \in longChain:
-                /\ b.id = b2.id 
-                /\ b.epoch = b2.epoch 
-                /\ b.length = b2.length
-                /\ b.parent = b2.parent
+                /\ b.payload.id = b2.payload.id 
+                /\ b.payload.epoch = b2.payload.epoch 
+                /\ b.payload.length = b2.payload.length
+                /\ b.payload.parent = b2.payload.parent
                 
 (***************************************************************************)
 
-\* Updates a set of blocks with signatures from a given block
-UpdateLocalState(localState, m) ==
-    LET b == CHOOSE b \in localState : b.epoch = m.epoch
-    IN (localState \ {b}) \union { [ b EXCEPT !.sigs = b.sigs \union m.sigs ] }
-
 (***************************************************************************)
-(* Messages as just blocks with metadata                                   *)
+(* Message is a single vote on a block and receivers' ACK                  *)
 (***************************************************************************)
 MessageType == [
     block : BlockType,
+    vote: Nodes,
     received : SUBSET(Nodes)
 ]
 (***************************************************************************)
@@ -116,23 +125,20 @@ variables
     nextBlockId = 1;
     newBlock = GenesisBlock; \* a temp variable storing output of CreateBlock
 
-macro CreateBlock(epoch, parent, creator) begin
+macro CreateBlock(epoch, parent) begin
     newBlock := 
         [
             id |-> nextBlockId,
             epoch |-> epoch,
             parent |-> parent.id,
             length |-> parent.length + 1,
-            sigs |-> {creator}
+            creator |-> self
         ];
     nextBlockId := nextBlockId + 1;
 end macro
 
-macro SendMessage(b) begin
-    messages := messages \union {[
-        block |-> b,
-        received |-> {self}
-    ]};
+macro SendMessage(m) begin
+    messages := messages \union { m };
 end macro
 
 macro ReceiveMessage(m) begin
@@ -140,15 +146,25 @@ macro ReceiveMessage(m) begin
         {[m EXCEPT !.received = m.received \union {self}]};
 end macro
 
-macro ReceiveAndSend(receivedMsg, blockToSend) begin
+macro ReceiveAndSend(receivedMsg, msgToSend) begin
     messages := (messages \ {receivedMsg}) \union 
         {[receivedMsg EXCEPT !.received = receivedMsg.received \union {self}]}
-        \union {[ block |-> blockToSend, received |-> {self}]};
+        \union { msgToSend };
+end macro
+
+macro UpdateLocalBlocks(localBlocks, block, vote) begin
+    if \E lb \in localBlocks: lb.payload.id = block.id then
+        with lb = CHOOSE lb \in localBlocks: lb.payload.id = block.id do 
+            localBlocks := (localBlocks \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union vote]};
+        end with
+    else 
+        localBlocks := localBlocks \union {[payload |-> block, sigs |-> {block.creator} \union vote]}
+    end if;
 end macro
 
 fair process honest \in CorrectNodes
 variables
-    localBlocks = {GenesisBlock}; \* blocks that I have seen
+    localBlocks = {[payload |-> GenesisBlock, sigs |-> Nodes]}; \* blocks that I have seen
 begin
     Propose:
         with
@@ -157,9 +173,9 @@ begin
         do 
             if localEpoch = currentEpoch /\ Leaders[localEpoch] = self then
                 \* Propose a new block
-                CreateBlock(localEpoch, parent, self);
-                SendMessage(newBlock);
-                localBlocks := localBlocks \union { newBlock };
+                CreateBlock(localEpoch, parent.payload);
+                SendMessage(SignBlock(newBlock, self));
+                UpdateLocalBlocks(localBlocks, newBlock, {self});
             end if;
         end with;
     ReceiveOrSyncEpoch:
@@ -168,27 +184,23 @@ begin
                 m \in {m \in messages: self \notin m.received}, 
                 b = m.block 
             do
-                if b.id \in { l.id : l \in localBlocks } then
+                if b.id \in { l.payload.id : l \in localBlocks } then
                     \* Already seen this block, just update the other new votes on it
                     ReceiveMessage(m); 
-                    localBlocks := UpdateLocalState(localBlocks, b);
+                    UpdateLocalBlocks(localBlocks, b, {m.vote})
                 elsif  
                     /\ b.epoch = currentEpoch
-                    /\ Leaders[currentEpoch] \in b.sigs
-                    /\ b.epoch \notin { l.epoch: l \in localBlocks }
-                    /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks) } then
+                    /\ Leaders[currentEpoch] = b.creator
+                    /\ b.epoch \notin { l.payload.epoch: l \in localBlocks }
+                    /\ b.parent \in { l.payload.id : l \in LongestNotarizedBlocks(localBlocks) } then
                     with 
-                        parent = CHOOSE l \in LongestNotarizedBlocks(localBlocks): b.parent = l.id,
+                        parent = CHOOSE l \in LongestNotarizedBlocks(localBlocks): b.parent = l.payload.id,
                         signedBlock = SignBlock(b, self)
                     do
-                        if (b.length = parent.length + 1) /\ (b.epoch > parent.epoch) then 
+                        if (b.length = parent.payload.length + 1) /\ (b.epoch > parent.payload.epoch) then 
                             \* vote for correct new block and add to localBlocks
                             ReceiveAndSend(m, signedBlock);
-                            localBlocks := localBlocks \union {signedBlock};
-                        else
-                            \* correct leader, correct epoch, correct parent, but incorrect height or epoch field
-                            ReceiveMessage(m); 
-                            localBlocks := localBlocks \union { b }
+                            UpdateLocalBlocks(localBlocks, b, {self});
                         end if;                        
                     end with;
                 else
@@ -196,8 +208,9 @@ begin
                     \* case 2: haven't seen, block for the current epoch, but from the wrong leader
                     \* case 3: haven't seen, block for the current epoch, from the right leader, but already voted for an eariler block by him
                     \* case 4: haven't seen, current epoch, right leader, haven't voted, but conflicting parent 
+                    \* case 5: haven't seen, correct leader, correct epoch, correct parent, but incorrect height or epoch field
                     ReceiveMessage(m); 
-                    localBlocks := localBlocks \union { b }
+                    UpdateLocalBlocks(localBlocks, b, {});
                 end if;
             end with;
         end while;
@@ -217,7 +230,7 @@ begin
                 await 
                     /\ \A r \in Nodes: localEpochs[r] = currentEpoch
                     /\ currentLeader \in CorrectNodes => \E m \in messages:
-                        /\ currentLeader \in m.received
+                        /\ m.block.creator = currentLeader
                         /\ m.block.epoch = currentEpoch
             end with;
 
@@ -228,7 +241,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "fc315bb" /\ chksum(tla) = "7ceedf17")
+\* BEGIN TRANSLATION (chksum(pcal) = "18147317" /\ chksum(tla) = "3222c38b")
 VARIABLES messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
           localBlocks
 
@@ -244,7 +257,7 @@ Init == (* Global variables *)
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
         (* Process honest *)
-        /\ localBlocks = [self \in CorrectNodes |-> {GenesisBlock}]
+        /\ localBlocks = [self \in CorrectNodes |-> {[payload |-> GenesisBlock, sigs |-> Nodes]}]
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Propose"
                                         [] self = "timer" -> "NextRound"]
 
@@ -255,16 +268,16 @@ Propose(self) == /\ pc[self] = "Propose"
                            THEN /\ newBlock' = [
                                                    id |-> nextBlockId,
                                                    epoch |-> localEpoch,
-                                                   parent |-> parent.id,
-                                                   length |-> parent.length + 1,
-                                                   sigs |-> {self}
+                                                   parent |-> (parent.payload).id,
+                                                   length |-> (parent.payload).length + 1,
+                                                   creator |-> self
                                                ]
                                 /\ nextBlockId' = nextBlockId + 1
-                                /\ messages' = (            messages \union {[
-                                                    block |-> newBlock',
-                                                    received |-> {self}
-                                                ]})
-                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { newBlock' }]
+                                /\ messages' = (messages \union { (SignBlock(newBlock', self)) })
+                                /\ IF \E lb \in localBlocks[self]: lb.payload.id = newBlock'.id
+                                      THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.payload.id = newBlock'.id IN
+                                                localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union ({self})]}]
+                                      ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {[payload |-> newBlock', sigs |-> {newBlock'.creator} \union ({self})]}]
                            ELSE /\ TRUE
                                 /\ UNCHANGED << messages, nextBlockId, 
                                                 newBlock, localBlocks >>
@@ -275,27 +288,36 @@ ReceiveOrSyncEpoch(self) == /\ pc[self] = "ReceiveOrSyncEpoch"
                             /\ IF localEpochs[self] = currentEpoch
                                   THEN /\ \E m \in {m \in messages: self \notin m.received}:
                                             LET b == m.block IN
-                                              IF b.id \in { l.id : l \in localBlocks[self] }
+                                              IF b.id \in { l.payload.id : l \in localBlocks[self] }
                                                  THEN /\ messages' = (        (messages \ {m}) \union
                                                                       {[m EXCEPT !.received = m.received \union {self}]})
-                                                      /\ localBlocks' = [localBlocks EXCEPT ![self] = UpdateLocalState(localBlocks[self], b)]
+                                                      /\ IF \E lb \in localBlocks[self]: lb.payload.id = b.id
+                                                            THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.payload.id = b.id IN
+                                                                      localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union ({m.vote})]}]
+                                                            ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {[payload |-> b, sigs |-> {b.creator} \union ({m.vote})]}]
                                                  ELSE /\ IF /\ b.epoch = currentEpoch
-                                                            /\ Leaders[currentEpoch] \in b.sigs
-                                                            /\ b.epoch \notin { l.epoch: l \in localBlocks[self] }
-                                                            /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks[self]) }
-                                                            THEN /\ LET parent == CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.id IN
+                                                            /\ Leaders[currentEpoch] = b.creator
+                                                            /\ b.epoch \notin { l.payload.epoch: l \in localBlocks[self] }
+                                                            /\ b.parent \in { l.payload.id : l \in LongestNotarizedBlocks(localBlocks[self]) }
+                                                            THEN /\ LET parent == CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.payload.id IN
                                                                       LET signedBlock == SignBlock(b, self) IN
-                                                                        IF (b.length = parent.length + 1) /\ (b.epoch > parent.epoch)
+                                                                        IF (b.length = parent.payload.length + 1) /\ (b.epoch > parent.payload.epoch)
                                                                            THEN /\ messages' = (        (messages \ {m}) \union
                                                                                                 {[m EXCEPT !.received = m.received \union {self}]}
-                                                                                                \union {[ block |-> signedBlock, received |-> {self}]})
-                                                                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
-                                                                           ELSE /\ messages' = (        (messages \ {m}) \union
-                                                                                                {[m EXCEPT !.received = m.received \union {self}]})
-                                                                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
+                                                                                                \union { signedBlock })
+                                                                                /\ IF \E lb \in localBlocks[self]: lb.payload.id = b.id
+                                                                                      THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.payload.id = b.id IN
+                                                                                                localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union ({self})]}]
+                                                                                      ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {[payload |-> b, sigs |-> {b.creator} \union ({self})]}]
+                                                                           ELSE /\ TRUE
+                                                                                /\ UNCHANGED << messages, 
+                                                                                                localBlocks >>
                                                             ELSE /\ messages' = (        (messages \ {m}) \union
                                                                                  {[m EXCEPT !.received = m.received \union {self}]})
-                                                                 /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { b }]
+                                                                 /\ IF \E lb \in localBlocks[self]: lb.payload.id = b.id
+                                                                       THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.payload.id = b.id IN
+                                                                                 localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union ({})]}]
+                                                                       ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {[payload |-> b, sigs |-> {b.creator} \union ({})]}]
                                        /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSyncEpoch"]
                                        /\ UNCHANGED localEpochs
                                   ELSE /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
@@ -313,7 +335,7 @@ NextRound == /\ pc["timer"] = "NextRound"
                    THEN /\ LET currentLeader == Leaders[currentEpoch] IN
                              /\ \A r \in Nodes: localEpochs[r] = currentEpoch
                              /\ currentLeader \in CorrectNodes => \E m \in messages:
-                                 /\ currentLeader \in m.received
+                                 /\ m.block.creator = currentLeader
                                  /\ m.block.epoch = currentEpoch
                         /\ IF currentEpoch >= GlobalStabTime
                               THEN /\ (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received))
@@ -343,8 +365,11 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION 
 
-TypeInvariant == /\ \A m \in messages : m \in MessageType
-                 /\ \A n \in Nodes : \A b \in localBlocks[n] : b \in BlockType
+TypeInvariant == 
+    /\ \A m \in messages: m \in MessageType
+    /\ \A n \in Nodes: \A lb \in localBlocks[n]: lb \in LocalBlockType
+
+\* TODO: add UniqueBlockId check
 
 MonoIncEpoch == [][currentEpoch' = currentEpoch + 1]_currentEpoch
 LocalEpochCorrectness == [](\A r \in Nodes: localEpochs[r] = currentEpoch \/ localEpochs[r] = currentEpoch - 1)
@@ -359,7 +384,7 @@ HonestLeadersShouldPropose == [](
 NoDoubleVotePerEpoch ==[](
     \A r \in CorrectNodes:
         \A e \in 0..currentEpoch:
-            LET voted == {b \in localBlocks[r]: b.epoch = e /\ r \in b.sigs }
+            LET voted == {lb \in localBlocks[r]: lb.payload.epoch = e /\ r \in lb.sigs }
             IN Cardinality(voted) <= 1
 )
 

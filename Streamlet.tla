@@ -349,6 +349,17 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 TypeInvariant == /\ \A m \in messages : m \in MessageType
                  /\ \A n \in Nodes : \A b \in localBlocks[n] : b \in BlockType
 
+UniqueBlockId == 
+    \A n \in Nodes: \A b1, b2 \in localBlocks[n]:
+        /\ b1.id = b2.id => 
+            /\ b1.epoch = b2.epoch
+            /\ b1.parent = b2.parent
+            /\ b1.length = b2.length
+        /\ b1.id # b2.id =>
+            \/ b1.epoch # b2.epoch
+            \/ b1.parent # b2.parent
+            \/ b1.length # b2.length
+
 MonoIncEpoch == [][currentEpoch' = currentEpoch + 1]_currentEpoch
 LocalEpochCorrectness == [](\A r \in Nodes: localEpochs[r] = currentEpoch \/ localEpochs[r] = currentEpoch - 1)
 HonestLeadersShouldPropose == [](

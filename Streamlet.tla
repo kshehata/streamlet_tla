@@ -35,14 +35,6 @@ BlockType == [
         sigs : SUBSET(Nodes)
     ]
 
-CreateBlock(id, epoch, parent, creator) == [
-        id |-> id,
-        epoch |-> epoch,
-        parent |-> parent.id,
-        length |-> parent.length + 1,
-        sigs |-> {creator}
-    ]
-
 GenesisBlock == [
         id |-> 0,
         epoch |-> 0,
@@ -122,6 +114,19 @@ variables
     currentEpoch = 1;
     localEpochs = [r \in Nodes |-> currentEpoch];
     nextBlockId = 1;
+    newBlock = GenesisBlock; \* a temp variable storing output of CreateBlock
+
+macro CreateBlock(epoch, parent, creator) begin
+    newBlock := 
+        [
+            id |-> nextBlockId,
+            epoch |-> epoch,
+            parent |-> parent.id,
+            length |-> parent.length + 1,
+            sigs |-> {creator}
+        ];
+    nextBlockId := nextBlockId + 1;
+end macro
 
 macro SendMessage(b) begin
     messages := messages \union {[
@@ -149,13 +154,12 @@ begin
         with
             localEpoch = localEpochs[self],
             parent \in LongestNotarizedBlocks(localBlocks),
-            newBlock = CreateBlock(nextBlockId, localEpoch, parent, self)
         do 
             if localEpoch = currentEpoch /\ Leaders[localEpoch] = self then
                 \* Propose a new block
+                CreateBlock(localEpoch, parent, self);
                 SendMessage(newBlock);
                 localBlocks := localBlocks \union { newBlock };
-                nextBlockId := nextBlockId + 1;
             end if;
         end with;
     ReceiveOrSyncEpoch:
@@ -224,11 +228,12 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "6c6531b5" /\ chksum(tla) = "36f4bc59")
-VARIABLES messages, currentEpoch, localEpochs, nextBlockId, pc, localBlocks
+\* BEGIN TRANSLATION (chksum(pcal) = "fc315bb" /\ chksum(tla) = "7ceedf17")
+VARIABLES messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
+          localBlocks
 
-vars == << messages, currentEpoch, localEpochs, nextBlockId, pc, localBlocks
-        >>
+vars == << messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
+           localBlocks >>
 
 ProcSet == (CorrectNodes) \cup {"timer"}
 
@@ -237,6 +242,7 @@ Init == (* Global variables *)
         /\ currentEpoch = 1
         /\ localEpochs = [r \in Nodes |-> currentEpoch]
         /\ nextBlockId = 1
+        /\ newBlock = GenesisBlock
         (* Process honest *)
         /\ localBlocks = [self \in CorrectNodes |-> {GenesisBlock}]
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Propose"
@@ -245,17 +251,23 @@ Init == (* Global variables *)
 Propose(self) == /\ pc[self] = "Propose"
                  /\ LET localEpoch == localEpochs[self] IN
                       \E parent \in LongestNotarizedBlocks(localBlocks[self]):
-                        LET newBlock == CreateBlock(nextBlockId, localEpoch, parent, self) IN
-                          IF localEpoch = currentEpoch /\ Leaders[localEpoch] = self
-                             THEN /\ messages' = (            messages \union {[
-                                                      block |-> newBlock,
-                                                      received |-> {self}
-                                                  ]})
-                                  /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { newBlock }]
-                                  /\ nextBlockId' = nextBlockId + 1
-                             ELSE /\ TRUE
-                                  /\ UNCHANGED << messages, nextBlockId, 
-                                                  localBlocks >>
+                        IF localEpoch = currentEpoch /\ Leaders[localEpoch] = self
+                           THEN /\ newBlock' = [
+                                                   id |-> nextBlockId,
+                                                   epoch |-> localEpoch,
+                                                   parent |-> parent.id,
+                                                   length |-> parent.length + 1,
+                                                   sigs |-> {self}
+                                               ]
+                                /\ nextBlockId' = nextBlockId + 1
+                                /\ messages' = (            messages \union {[
+                                                    block |-> newBlock',
+                                                    received |-> {self}
+                                                ]})
+                                /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union { newBlock' }]
+                           ELSE /\ TRUE
+                                /\ UNCHANGED << messages, nextBlockId, 
+                                                newBlock, localBlocks >>
                  /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSyncEpoch"]
                  /\ UNCHANGED << currentEpoch, localEpochs >>
 
@@ -291,7 +303,8 @@ ReceiveOrSyncEpoch(self) == /\ pc[self] = "ReceiveOrSyncEpoch"
                                              THEN /\ pc' = [pc EXCEPT ![self] = "Propose"]
                                              ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                                        /\ UNCHANGED << messages, localBlocks >>
-                            /\ UNCHANGED << currentEpoch, nextBlockId >>
+                            /\ UNCHANGED << currentEpoch, nextBlockId, 
+                                            newBlock >>
 
 honest(self) == Propose(self) \/ ReceiveOrSyncEpoch(self)
 
@@ -309,7 +322,8 @@ NextRound == /\ pc["timer"] = "NextRound"
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED currentEpoch
-             /\ UNCHANGED << messages, localEpochs, nextBlockId, localBlocks >>
+             /\ UNCHANGED << messages, localEpochs, nextBlockId, newBlock, 
+                             localBlocks >>
 
 Timer == NextRound
 

@@ -108,6 +108,7 @@ variables
     messages = { };
     currentEpoch = 1;
     localEpochs = [r \in Nodes |-> currentEpoch];
+    localBlocks = [r \in Nodes |-> {GenesisBlock}];
     nextBlockId = 1;
     newBlock = GenesisBlock; \* a temp variable storing output of CreateBlock
 
@@ -152,19 +153,17 @@ macro UpdateLocalBlocks(localBlocks, block) begin
 end macro
 
 fair process honest \in CorrectNodes
-variables
-    localBlocks = {GenesisBlock}; \* blocks that I have seen
 begin
     Propose:
         with
             localEpoch = localEpochs[self],
-            parent \in LongestNotarizedBlocks(localBlocks),
+            parent \in LongestNotarizedBlocks(localBlocks[self]),
         do 
             if localEpoch = currentEpoch /\ Leaders[localEpoch] = self then
                 \* Propose a new block
                 CreateBlock(localEpoch, parent, self);
                 SendMessage(newBlock);
-                UpdateLocalBlocks(localBlocks, newBlock);
+                UpdateLocalBlocks(localBlocks[self], newBlock);
             end if;
         end with;
     ReceiveOrSyncEpoch:
@@ -175,16 +174,16 @@ begin
             do
                 if  /\ b.epoch = currentEpoch
                     /\ Leaders[currentEpoch] \in b.sigs
-                    /\ b.epoch \notin { l.epoch: l \in localBlocks }
-                    /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks) } then
+                    /\ b.epoch \notin { l.epoch: l \in localBlocks[self] }
+                    /\ b.parent \in { l.id : l \in LongestNotarizedBlocks(localBlocks[self]) } then
                     with 
-                        parent = CHOOSE l \in LongestNotarizedBlocks(localBlocks): b.parent = l.id,
+                        parent = CHOOSE l \in LongestNotarizedBlocks(localBlocks[self]): b.parent = l.id,
                         signedBlock = SignBlock(b, self)
                     do
                         if (b.length = parent.length + 1) /\ (b.epoch > parent.epoch) then 
                             \* vote for correct new block and add to localBlocks
                             ReceiveAndSend(m, signedBlock);
-                            UpdateLocalBlocks(localBlocks, signedBlock);
+                            UpdateLocalBlocks(localBlocks[self], signedBlock);
                         end if;
                     end with;
                 else
@@ -195,7 +194,7 @@ begin
                     \* case 4: haven't seen, current epoch, right leader, haven't voted, but conflicting parent 
                     \* case 5: haven't seen, correct leader, correct epoch, correct parent, but incorrect height or epoch field
                     ReceiveMessage(m); 
-                    UpdateLocalBlocks(localBlocks, b);
+                    UpdateLocalBlocks(localBlocks[self], b);
                 end if;
             end with;
         end while;
@@ -207,6 +206,54 @@ begin
         end if;
 end process;
 
+fair process byzantine \in FaultyNodes
+begin
+    Start:
+        while localEpochs[self] = currentEpoch do
+            either
+                \* propose a new block extending any blocks seen
+                with
+                    parent \in localBlocks[self],
+                    e \in parent.epoch+1..NumEpochs,
+                do 
+                    if \E lb \in localBlocks[self]: lb.epoch = e /\ lb.parent = parent.id then
+                        \* already proposed and existed, don't propose again
+                        skip;
+                    else
+                        CreateBlock(e, parent, self);
+                        SendMessage(newBlock);
+                        UpdateLocalBlocks(localBlocks[self], newBlock);
+                    end if;
+               end with;
+            or 
+                \* receive any block
+                with 
+                    m \in {m \in messages: self \notin m.received}, 
+                    b = m.block,
+                    signedBlock = SignBlock(b, self)
+                do 
+                    either          
+                        \* vote for it if not voted before
+                        if self \notin b.sigs then
+                            ReceiveAndSend(m, signedBlock);
+                            UpdateLocalBlocks(localBlocks[self], signedBlock);
+                        end if;
+                    or 
+                        \* just receive and update local view
+                        ReceiveMessage(m); 
+                        UpdateLocalBlocks(localBlocks[self], b);
+                    end either;
+                end with;
+            end either;
+        end while;
+
+        \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
+        localEpochs[self] := localEpochs[self] + 1;
+        if localEpochs[self] <= NumEpochs then
+            goto Start;
+        end if;  
+end process;
+
 fair process Timer = "timer"
 begin
     NextRound:
@@ -215,7 +262,7 @@ begin
                 await 
                     /\ \A r \in Nodes: localEpochs[r] = currentEpoch
                     /\ currentLeader \in CorrectNodes => \E m \in messages:
-                        /\ currentLeader \in m.received
+                        /\ currentLeader \in m.block.sigs
                         /\ m.block.epoch = currentEpoch
             end with;
 
@@ -226,24 +273,24 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "669f0670" /\ chksum(tla) = "f7746e99")
-VARIABLES messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
-          localBlocks
+\* BEGIN TRANSLATION (chksum(pcal) = "a41691be" /\ chksum(tla) = "69c86d90")
+VARIABLES messages, currentEpoch, localEpochs, localBlocks, nextBlockId, 
+          newBlock, pc
 
-vars == << messages, currentEpoch, localEpochs, nextBlockId, newBlock, pc, 
-           localBlocks >>
+vars == << messages, currentEpoch, localEpochs, localBlocks, nextBlockId, 
+           newBlock, pc >>
 
-ProcSet == (CorrectNodes) \cup {"timer"}
+ProcSet == (CorrectNodes) \cup (FaultyNodes) \cup {"timer"}
 
 Init == (* Global variables *)
         /\ messages = { }
         /\ currentEpoch = 1
         /\ localEpochs = [r \in Nodes |-> currentEpoch]
+        /\ localBlocks = [r \in Nodes |-> {GenesisBlock}]
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
-        (* Process honest *)
-        /\ localBlocks = [self \in CorrectNodes |-> {GenesisBlock}]
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Propose"
+                                        [] self \in FaultyNodes -> "Start"
                                         [] self = "timer" -> "NextRound"]
 
 Propose(self) == /\ pc[self] = "Propose"
@@ -262,13 +309,13 @@ Propose(self) == /\ pc[self] = "Propose"
                                                     block |-> newBlock',
                                                     received |-> {self}
                                                 ]})
-                                /\ IF \E lb \in localBlocks[self]: lb.id = newBlock'.id
-                                      THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = newBlock'.id IN
-                                                localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union newBlock'.sigs]}]
-                                      ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {newBlock'}]
+                                /\ IF \E lb \in (localBlocks[self]): lb.id = newBlock'.id
+                                      THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = newBlock'.id IN
+                                                localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union newBlock'.sigs]}]
+                                      ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {newBlock'}]
                            ELSE /\ TRUE
-                                /\ UNCHANGED << messages, nextBlockId, 
-                                                newBlock, localBlocks >>
+                                /\ UNCHANGED << messages, localBlocks, 
+                                                nextBlockId, newBlock >>
                  /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSyncEpoch"]
                  /\ UNCHANGED << currentEpoch, localEpochs >>
 
@@ -286,19 +333,19 @@ ReceiveOrSyncEpoch(self) == /\ pc[self] = "ReceiveOrSyncEpoch"
                                                                 THEN /\ messages' = (        (messages \ {m}) \union
                                                                                      {[m EXCEPT !.received = m.received \union {self}]}
                                                                                      \union {[ block |-> signedBlock, received |-> {self}]})
-                                                                     /\ IF \E lb \in localBlocks[self]: lb.id = signedBlock.id
-                                                                           THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = signedBlock.id IN
-                                                                                     localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union signedBlock.sigs]}]
-                                                                           ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {signedBlock}]
+                                                                     /\ IF \E lb \in (localBlocks[self]): lb.id = signedBlock.id
+                                                                           THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = signedBlock.id IN
+                                                                                     localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union signedBlock.sigs]}]
+                                                                           ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {signedBlock}]
                                                                 ELSE /\ TRUE
                                                                      /\ UNCHANGED << messages, 
                                                                                      localBlocks >>
                                                  ELSE /\ messages' = (        (messages \ {m}) \union
                                                                       {[m EXCEPT !.received = m.received \union {self}]})
-                                                      /\ IF \E lb \in localBlocks[self]: lb.id = b.id
-                                                            THEN /\ LET lb == CHOOSE lb \in localBlocks[self]: lb.id = b.id IN
-                                                                      localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self] \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union b.sigs]}]
-                                                            ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = localBlocks[self] \union {b}]
+                                                      /\ IF \E lb \in (localBlocks[self]): lb.id = b.id
+                                                            THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = b.id IN
+                                                                      localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union b.sigs]}]
+                                                            ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {b}]
                                        /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSyncEpoch"]
                                        /\ UNCHANGED localEpochs
                                   ELSE /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
@@ -311,12 +358,71 @@ ReceiveOrSyncEpoch(self) == /\ pc[self] = "ReceiveOrSyncEpoch"
 
 honest(self) == Propose(self) \/ ReceiveOrSyncEpoch(self)
 
+Start(self) == /\ pc[self] = "Start"
+               /\ IF localEpochs[self] = currentEpoch
+                     THEN /\ \/ /\ \E parent \in localBlocks[self]:
+                                     \E e \in parent.epoch+1..NumEpochs:
+                                       IF \E lb \in localBlocks[self]: lb.epoch = e /\ lb.parent = parent.id
+                                          THEN /\ TRUE
+                                               /\ UNCHANGED << messages, 
+                                                               localBlocks, 
+                                                               nextBlockId, 
+                                                               newBlock >>
+                                          ELSE /\ newBlock' = [
+                                                                  id |-> nextBlockId,
+                                                                  epoch |-> e,
+                                                                  parent |-> parent.id,
+                                                                  length |-> parent.length + 1,
+                                                                  sigs |-> {self}
+                                                              ]
+                                               /\ nextBlockId' = nextBlockId + 1
+                                               /\ messages' = (            messages \union {[
+                                                                   block |-> newBlock',
+                                                                   received |-> {self}
+                                                               ]})
+                                               /\ IF \E lb \in (localBlocks[self]): lb.id = newBlock'.id
+                                                     THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = newBlock'.id IN
+                                                               localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union newBlock'.sigs]}]
+                                                     ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {newBlock'}]
+                             \/ /\ \E m \in {m \in messages: self \notin m.received}:
+                                     LET b == m.block IN
+                                       LET signedBlock == SignBlock(b, self) IN
+                                         \/ /\ IF self \notin b.sigs
+                                                  THEN /\ messages' = (        (messages \ {m}) \union
+                                                                       {[m EXCEPT !.received = m.received \union {self}]}
+                                                                       \union {[ block |-> signedBlock, received |-> {self}]})
+                                                       /\ IF \E lb \in (localBlocks[self]): lb.id = signedBlock.id
+                                                             THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = signedBlock.id IN
+                                                                       localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union signedBlock.sigs]}]
+                                                             ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {signedBlock}]
+                                                  ELSE /\ TRUE
+                                                       /\ UNCHANGED << messages, 
+                                                                       localBlocks >>
+                                         \/ /\ messages' = (        (messages \ {m}) \union
+                                                            {[m EXCEPT !.received = m.received \union {self}]})
+                                            /\ IF \E lb \in (localBlocks[self]): lb.id = b.id
+                                                  THEN /\ LET lb == CHOOSE lb \in (localBlocks[self]): lb.id = b.id IN
+                                                            localBlocks' = [localBlocks EXCEPT ![self] = ((localBlocks[self]) \ {lb}) \union {[lb EXCEPT !.sigs = lb.sigs \union b.sigs]}]
+                                                  ELSE /\ localBlocks' = [localBlocks EXCEPT ![self] = (localBlocks[self]) \union {b}]
+                                /\ UNCHANGED <<nextBlockId, newBlock>>
+                          /\ pc' = [pc EXCEPT ![self] = "Start"]
+                          /\ UNCHANGED localEpochs
+                     ELSE /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
+                          /\ IF localEpochs'[self] <= NumEpochs
+                                THEN /\ pc' = [pc EXCEPT ![self] = "Start"]
+                                ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
+                          /\ UNCHANGED << messages, localBlocks, nextBlockId, 
+                                          newBlock >>
+               /\ UNCHANGED currentEpoch
+
+byzantine(self) == Start(self)
+
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF currentEpoch <= NumEpochs
                    THEN /\ LET currentLeader == Leaders[currentEpoch] IN
                              /\ \A r \in Nodes: localEpochs[r] = currentEpoch
                              /\ currentLeader \in CorrectNodes => \E m \in messages:
-                                 /\ currentLeader \in m.received
+                                 /\ currentLeader \in m.block.sigs
                                  /\ m.block.epoch = currentEpoch
                         /\ IF currentEpoch >= GlobalStabTime
                               THEN /\ (\A m \in messages : (m.block.epoch <= currentEpoch) => (CorrectNodes \subseteq m.received))
@@ -325,8 +431,8 @@ NextRound == /\ pc["timer"] = "NextRound"
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED currentEpoch
-             /\ UNCHANGED << messages, localEpochs, nextBlockId, newBlock, 
-                             localBlocks >>
+             /\ UNCHANGED << messages, localEpochs, localBlocks, nextBlockId, 
+                             newBlock >>
 
 Timer == NextRound
 
@@ -336,10 +442,12 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
 
 Next == Timer
            \/ (\E self \in CorrectNodes: honest(self))
+           \/ (\E self \in FaultyNodes: byzantine(self))
            \/ Terminating
 
 Spec == /\ Init /\ [][Next]_vars
         /\ \A self \in CorrectNodes : WF_vars(honest(self))
+        /\ \A self \in FaultyNodes : WF_vars(byzantine(self))
         /\ WF_vars(Timer)
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
@@ -351,14 +459,10 @@ TypeInvariant == /\ \A m \in messages : m \in MessageType
 
 UniqueBlockId == 
     \A n \in Nodes: \A b1, b2 \in localBlocks[n]:
-        /\ b1.id = b2.id => 
+        b1.id = b2.id => 
             /\ b1.epoch = b2.epoch
             /\ b1.parent = b2.parent
             /\ b1.length = b2.length
-        /\ b1.id # b2.id =>
-            \/ b1.epoch # b2.epoch
-            \/ b1.parent # b2.parent
-            \/ b1.length # b2.length
 
 MonoIncEpoch == [][currentEpoch' = currentEpoch + 1]_currentEpoch
 LocalEpochCorrectness == [](\A r \in Nodes: localEpochs[r] = currentEpoch \/ localEpochs[r] = currentEpoch - 1)
@@ -367,7 +471,7 @@ HonestLeadersShouldPropose == [](
         LET e == localEpochs[r] 
         IN 
             (currentEpoch # e /\ Leaders[e] = r) => \E m \in messages:
-                /\ r \in m.received
+                /\ r \in m.block.sigs
                 /\ m.block.epoch = e
 )
 NoDoubleVotePerEpoch ==[](

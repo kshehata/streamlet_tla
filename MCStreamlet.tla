@@ -4,10 +4,10 @@ EXTENDS Streamlet, TLC
 CONSTANTS h1, h2, h3, a1
 
 ConstCorrectNodes == {h1, h2, h3}
-ConstFaultyNodes == {}
+ConstFaultyNodes == {a1}
 NodePerms == Permutations(ConstCorrectNodes) \cup Permutations(ConstFaultyNodes)
 
-ConstLeaders == <<h2, h1, h3, h1>>
+ConstLeaders == <<h2, h1, h3, a1>>
 
 \* for debugging purposes: copy from error trace then paste here, and uncomment the ASSUME PrintT statements: 
 localBlocksTest == (

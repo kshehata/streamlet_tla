@@ -89,4 +89,17 @@ ASSUME LongestNotarizedChainTips(Msgs) = {b8}
 ExpectedFinalizedBlocks == {GenesisBlock, b6, b7}
 ASSUME \A b \in ExpectedFinalizedBlocks: IsFinalized(b, Msgs) = TRUE
 ASSUME \A b \in (Blocks \ ExpectedFinalizedBlocks): IsFinalized(b, Msgs) = FALSE 
+
+\* Now chain1 is \bot <- b1 <- b2,
+\*     chain2 is \bot <- b6 <- b7 <- b8 
+\*     chain3 is \bot <- b6 <- b7 <- b8 <- b9
+\*     chain4 is \bot <- b1 <- b4 <- b5
+chain1 == {GenesisBlock, b1, b2}
+chain2 == {GenesisBlock, b6, b7, b8}
+chain3 == {GenesisBlock, b6, b7, b8, b9}
+chain4 == {GenesisBlock, b1, b4, b5}
+ASSUME CheckConflictFree(chain1, chain2) = FALSE
+ASSUME CheckConflictFree(chain2, chain3) = TRUE
+ASSUME CheckConflictFree(chain2, chain4) = FALSE
+ASSUME CheckConflictFree(chain1, chain4) = FALSE
 =============================================================================

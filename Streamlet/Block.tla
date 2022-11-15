@@ -94,4 +94,19 @@ IsFinalized(block, msgs) == LET notarized == NotarizedChainBlocks(msgs) IN
 
 FinalizedBlocks(msgs) == LET blocks == {m.block: m \in msgs} IN 
     { b \in blocks: IsFinalized(b, msgs) }
+
+\* precondition: chain1, chain2 both contain blocks that form a proper chain
+\* check if two chains are prefix of the other, namely if they are conflict free
+\* return TRUE if they don't conflict, FALSE otherwise
+CheckConflictFree(chain1, chain2) == 
+    LET 
+        l1 == Cardinality(chain1)
+        l2 == Cardinality(chain2) 
+    IN
+        \/ 
+            /\ l1 <= l2
+            /\ chain1 \subseteq chain2
+        \/
+            /\ l1 > l2
+            /\ chain2 \subseteq chain1
 =============================================================================

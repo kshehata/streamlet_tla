@@ -14,72 +14,73 @@ variables
     \* Global cache of all blocks, assumed in paper that all nodes can just get all blocks.
     AllBlocks = {GenesisBlock};
 
-    \* All messages sent by replicas
-    Messages = {};
+    \* All messages sent by leader to all replicas
+    BroadcastMessages = {};
+
+    \* All messages sent by replicas directly to the leader (for the given view)
+    RepliesToLeader = {};
 
 define
 \* Shortcut for messages from the leader
-FilterMessages(src, dest) == { m \in Messages :
-            /\ src = m.vote
-            /\ dest \in m.dest
-            /\ dest \notin m.received }
+FilterMessages(type, vn, leader) == { m \in BroadcastMessages :
+            /\ type = m.type
+            /\ vn = m.viewNum
+            /\ m.vote = leader }
 end define;
 
-macro ReceiveMessage(msg) begin
-    Messages := (Messages \ {msg}) \union 
-        {MarkMessageReceivedBy(msg, self)};
+\* TODO: create the broadcast message directly?
+macro SendBroadcast(msg) begin
+    BroadcastMessages := BroadcastMessages \union {msg};
 end macro
 
-macro SendMessage(msg) begin
-    Messages := Messages \union {msg};
-end macro
-
-macro ReplyWithVote(msg, type, block, dest) begin
-    Messages := (Messages \ {msg}) \union {
-        MarkMessageReceivedBy(msg, self),
-        CreateMessageTo(type, curView, block, Null, self, dest)
+macro ReplyWithVote(type, block) begin
+    RepliesToLeader := RepliesToLeader \union {
+        CreateMessage(type, curView, block, Null, self)
     };
 end macro;
 
 macro ProposeNewBlock(justifyQC) begin
     with
         newBlock = CreateBlock(NextBlockId, justifyQC.block),
-        proposeMsg = CreateBroadcastMessage(Prepare, curView, newBlock, justifyQC, self)
+        proposeMsg = CreateMessage(Prepare, curView, newBlock, justifyQC, self)
     do
         NextBlockId := NextBlockId + 1;
         AllBlocks := AllBlocks \union {newBlock};
-        SendMessage(proposeMsg);
+        SendBroadcast(proposeMsg);
     end with;
 end macro;
 
 macro WaitForVotes(voteType) begin
-    while ~CheckVotesForQC(ReceivedVotes(Messages, voteType, curView, self)) do
-        with m \in { m \in Messages : self \in m.dest /\ self \notin m.received } do
-            ReceiveMessage(m);
+    while ~CheckVotesForQC(receivedVotes) do
+        with m \in { m \in RepliesToLeader : m.type = voteType /\ m.viewNum = curView } do
+            receivedVotes := receivedVotes \union {m};
         end with;
     end while;
 end macro;
 
 macro SendQC(voteType, phase, qc) begin
-    with votes = ReceivedVotes(Messages, voteType, curView, self) do
-        assert CheckVotesForQC(votes);
-        qc := GenerateQC(votes);
-        SendMessage(CreateBroadcastMessage(phase, curView, Null, qc, self));
-    end with;
+    assert CheckVotesForQC(receivedVotes);
+    qc := GenerateQC(receivedVotes);
+    SendBroadcast(CreateMessage(phase, curView, Null, qc, self));
 end macro;
 
 fair process rep \in Replicas
 variables
     curView = 1;
+    leader = Leaders[1];
     prepareQC = GenesisQC(Prepare);
     lockedQC = GenesisQC(PreCommit);
     \* Only used as a temporary, but makes life easier
     commitQC = GenesisQC(Commit);
+    \* Blocks commited in view of this replica
     committedBlocks = {};
+    \* Only used by the leader to keep votes received in the current phase
+    receivedVotes = {};
 
 begin
 LeaderCheck:
-    if (self # Leaders[curView]) then
+    leader := Leaders[curView];
+    if (self # leader) then
         goto ReplicaPrepare;
     end if;
 
@@ -89,73 +90,56 @@ Propose:
 LeaderPreCommit:
     WaitForVotes(Prepare);
     SendQC(Prepare, PreCommit, prepareQC);
+    receivedVotes := {};
 
 LeaderCommit:
     WaitForVotes(PreCommit);
     SendQC(PreCommit, Commit, lockedQC);
+    receivedVotes := {};
 
 LeaderDecide:
     WaitForVotes(Commit);
     SendQC(Commit, Decide, commitQC);
     committedBlocks := committedBlocks \union {commitQC.block};
+    receivedVotes := {};
     goto Done;
 
 
 ReplicaPrepare:
-    with leader = Leaders[curView],
-        m \in FilterMessages(leader, self) do
-        if m.type # Prepare \/ m.viewNum # curView then
-            ReceiveMessage(m);
-            goto ReplicaPrepare;
-        elsif ~DirectlyExtends(m.block, m.justify.block) then
-            ReceiveMessage(m);
-            \* TODO: What to do in this case ??
-        elsif ~( \/ BlockExtends(m.block, lockedQC.block, AllBlocks)
+    with m \in FilterMessages(Prepare, curView, leader) do
+        \* TODO: What should we do if this fails? Keep going? Timeout?
+        if DirectlyExtends(m.block, m.justify.block)
+            /\ ( BlockExtends(m.block, lockedQC.block, AllBlocks)
                  \/ m.justify.viewNum > lockedQC.viewNum ) then
-            print <<"Proposed block fails SafeNode:", m>>;
-            ReceiveMessage(m);
-            \* TODO: What to do in this case ??
-        else
-            ReplyWithVote(m, Prepare, m.block, leader);
+            ReplyWithVote(Prepare, m.block);
         end if;
     end with;
 
 ReplicaPreCommit:
-    with leader = Leaders[curView],
-        m \in FilterMessages(leader, self) do
-        \* TODO: Should this check the message as well ??
-        if m.justify.type # Prepare \/ m.justify.viewNum # curView then
-            ReceiveMessage(m);
-            goto ReplicaPreCommit;
-        else
+    with m \in FilterMessages(PreCommit, curView, leader) do
+        \* TODO: The check above isn't actually in the paper ??
+        \* TODO: What should we do if the check below fails ?
+        if m.justify.type = Prepare /\ m.justify.viewNum = curView then
             prepareQC := m.justify;
-            ReplyWithVote(m, PreCommit, m.justify.block, leader);
+            ReplyWithVote(PreCommit, m.justify.block);
         end if;
     end with;
 
 ReplicaCommit:
-    with leader = Leaders[curView],
-        m \in FilterMessages(leader, self) do
-        \* TODO: Should this check the message as well ??
-        if m.justify.type # PreCommit \/ m.justify.viewNum # curView then
-            \* print <<"Got invalid Commit message:", m>>;
-            ReceiveMessage(m);
-            goto ReplicaCommit;
-        else
+    with m \in FilterMessages(Commit, curView, leader) do
+        \* TODO: The check above isn't actually in the paper ??
+        \* TODO: What should we do if the check below fails ?
+        if m.justify.type = PreCommit /\ m.justify.viewNum = curView then
             lockedQC := m.justify;
-            ReplyWithVote(m, Commit, m.justify.block, leader);
+            ReplyWithVote(Commit, m.justify.block);
         end if;
     end with;
 
 ReplicaDecide:
-    with leader = Leaders[curView],
-        m \in FilterMessages(leader, self) do
-        \* TODO: Should this check the message as well ??
-        if m.justify.type # Commit \/ m.justify.viewNum # curView then
-            \* print <<"Got invalid Decide message:", m>>;
-            ReceiveMessage(m);
-            goto ReplicaCommit;
-        else
+    with m \in FilterMessages(Decide, curView, leader) do
+        \* TODO: The check above isn't actually in the paper ??
+        \* TODO: What should we do if the check below fails ?
+        if m.justify.type = Commit /\ m.justify.viewNum = curView then
             committedBlocks := committedBlocks \union {m.justify.block};
         end if;
     end with;
@@ -163,172 +147,168 @@ ReplicaDecide:
 end process;
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "58a11584" /\ chksum(tla) = "4aaf5c5a")
-VARIABLES NextBlockId, AllBlocks, Messages, pc
+\* BEGIN TRANSLATION (chksum(pcal) = "8303e53d" /\ chksum(tla) = "7d1f1c1e")
+VARIABLES NextBlockId, AllBlocks, BroadcastMessages, RepliesToLeader, pc
 
 (* define statement *)
-FilterMessages(src, dest) == { m \in Messages :
-            /\ src = m.vote
-            /\ dest \in m.dest
-            /\ dest \notin m.received }
+FilterMessages(type, vn, leader) == { m \in BroadcastMessages :
+            /\ type = m.type
+            /\ vn = m.viewNum
+            /\ m.vote = leader }
 
-VARIABLES curView, prepareQC, lockedQC, commitQC, committedBlocks
+VARIABLES curView, leader, prepareQC, lockedQC, commitQC, committedBlocks, 
+          receivedVotes
 
-vars == << NextBlockId, AllBlocks, Messages, pc, curView, prepareQC, lockedQC, 
-           commitQC, committedBlocks >>
+vars == << NextBlockId, AllBlocks, BroadcastMessages, RepliesToLeader, pc, 
+           curView, leader, prepareQC, lockedQC, commitQC, committedBlocks, 
+           receivedVotes >>
 
 ProcSet == (Replicas)
 
 Init == (* Global variables *)
         /\ NextBlockId = 1
         /\ AllBlocks = {GenesisBlock}
-        /\ Messages = {}
+        /\ BroadcastMessages = {}
+        /\ RepliesToLeader = {}
         (* Process rep *)
         /\ curView = [self \in Replicas |-> 1]
+        /\ leader = [self \in Replicas |-> Leaders[1]]
         /\ prepareQC = [self \in Replicas |-> GenesisQC(Prepare)]
         /\ lockedQC = [self \in Replicas |-> GenesisQC(PreCommit)]
         /\ commitQC = [self \in Replicas |-> GenesisQC(Commit)]
         /\ committedBlocks = [self \in Replicas |-> {}]
+        /\ receivedVotes = [self \in Replicas |-> {}]
         /\ pc = [self \in ProcSet |-> "LeaderCheck"]
 
 LeaderCheck(self) == /\ pc[self] = "LeaderCheck"
-                     /\ IF (self # Leaders[curView[self]])
+                     /\ leader' = [leader EXCEPT ![self] = Leaders[curView[self]]]
+                     /\ IF (self # leader'[self])
                            THEN /\ pc' = [pc EXCEPT ![self] = "ReplicaPrepare"]
                            ELSE /\ pc' = [pc EXCEPT ![self] = "Propose"]
-                     /\ UNCHANGED << NextBlockId, AllBlocks, Messages, curView, 
-                                     prepareQC, lockedQC, commitQC, 
-                                     committedBlocks >>
+                     /\ UNCHANGED << NextBlockId, AllBlocks, BroadcastMessages, 
+                                     RepliesToLeader, curView, prepareQC, 
+                                     lockedQC, commitQC, committedBlocks, 
+                                     receivedVotes >>
 
 Propose(self) == /\ pc[self] = "Propose"
                  /\ LET newBlock == CreateBlock(NextBlockId, prepareQC[self].block) IN
-                      LET proposeMsg == CreateBroadcastMessage(Prepare, curView[self], newBlock, prepareQC[self], self) IN
+                      LET proposeMsg == CreateMessage(Prepare, curView[self], newBlock, prepareQC[self], self) IN
                         /\ NextBlockId' = NextBlockId + 1
                         /\ AllBlocks' = (AllBlocks \union {newBlock})
-                        /\ Messages' = (Messages \union {proposeMsg})
+                        /\ BroadcastMessages' = (BroadcastMessages \union {proposeMsg})
                  /\ pc' = [pc EXCEPT ![self] = "LeaderPreCommit"]
-                 /\ UNCHANGED << curView, prepareQC, lockedQC, commitQC, 
-                                 committedBlocks >>
+                 /\ UNCHANGED << RepliesToLeader, curView, leader, prepareQC, 
+                                 lockedQC, commitQC, committedBlocks, 
+                                 receivedVotes >>
 
 LeaderPreCommit(self) == /\ pc[self] = "LeaderPreCommit"
-                         /\ IF ~CheckVotesForQC(ReceivedVotes(Messages, Prepare, curView[self], self))
-                               THEN /\ \E m \in { m \in Messages : self \in m.dest /\ self \notin m.received }:
-                                         Messages' = (        (Messages \ {m}) \union
-                                                      {MarkMessageReceivedBy(m, self)})
+                         /\ IF ~CheckVotesForQC(receivedVotes[self])
+                               THEN /\ \E m \in { m \in RepliesToLeader : m.type = Prepare /\ m.viewNum = curView[self] }:
+                                         receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
                                     /\ pc' = [pc EXCEPT ![self] = "LeaderPreCommit"]
-                                    /\ UNCHANGED prepareQC
-                               ELSE /\ LET votes == ReceivedVotes(Messages, Prepare, curView[self], self) IN
-                                         /\ Assert(CheckVotesForQC(votes), 
-                                                   "Failure of assertion at line 65, column 9 of macro called at line 91, column 5.")
-                                         /\ prepareQC' = [prepareQC EXCEPT ![self] = GenerateQC(votes)]
-                                         /\ Messages' = (Messages \union {(CreateBroadcastMessage(PreCommit, curView[self], Null, prepareQC'[self], self))})
+                                    /\ UNCHANGED << BroadcastMessages, 
+                                                    prepareQC >>
+                               ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
+                                              "Failure of assertion at line 62, column 5 of macro called at line 92, column 5.")
+                                    /\ prepareQC' = [prepareQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
+                                    /\ BroadcastMessages' = (BroadcastMessages \union {(CreateMessage(PreCommit, curView[self], Null, prepareQC'[self], self))})
+                                    /\ receivedVotes' = [receivedVotes EXCEPT ![self] = {}]
                                     /\ pc' = [pc EXCEPT ![self] = "LeaderCommit"]
-                         /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
+                         /\ UNCHANGED << NextBlockId, AllBlocks, 
+                                         RepliesToLeader, curView, leader, 
                                          lockedQC, commitQC, committedBlocks >>
 
 LeaderCommit(self) == /\ pc[self] = "LeaderCommit"
-                      /\ IF ~CheckVotesForQC(ReceivedVotes(Messages, PreCommit, curView[self], self))
-                            THEN /\ \E m \in { m \in Messages : self \in m.dest /\ self \notin m.received }:
-                                      Messages' = (        (Messages \ {m}) \union
-                                                   {MarkMessageReceivedBy(m, self)})
+                      /\ IF ~CheckVotesForQC(receivedVotes[self])
+                            THEN /\ \E m \in { m \in RepliesToLeader : m.type = PreCommit /\ m.viewNum = curView[self] }:
+                                      receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
                                  /\ pc' = [pc EXCEPT ![self] = "LeaderCommit"]
-                                 /\ UNCHANGED lockedQC
-                            ELSE /\ LET votes == ReceivedVotes(Messages, PreCommit, curView[self], self) IN
-                                      /\ Assert(CheckVotesForQC(votes), 
-                                                "Failure of assertion at line 65, column 9 of macro called at line 95, column 5.")
-                                      /\ lockedQC' = [lockedQC EXCEPT ![self] = GenerateQC(votes)]
-                                      /\ Messages' = (Messages \union {(CreateBroadcastMessage(Commit, curView[self], Null, lockedQC'[self], self))})
+                                 /\ UNCHANGED << BroadcastMessages, lockedQC >>
+                            ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
+                                           "Failure of assertion at line 62, column 5 of macro called at line 97, column 5.")
+                                 /\ lockedQC' = [lockedQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
+                                 /\ BroadcastMessages' = (BroadcastMessages \union {(CreateMessage(Commit, curView[self], Null, lockedQC'[self], self))})
+                                 /\ receivedVotes' = [receivedVotes EXCEPT ![self] = {}]
                                  /\ pc' = [pc EXCEPT ![self] = "LeaderDecide"]
-                      /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
-                                      prepareQC, commitQC, committedBlocks >>
+                      /\ UNCHANGED << NextBlockId, AllBlocks, RepliesToLeader, 
+                                      curView, leader, prepareQC, commitQC, 
+                                      committedBlocks >>
 
 LeaderDecide(self) == /\ pc[self] = "LeaderDecide"
-                      /\ IF ~CheckVotesForQC(ReceivedVotes(Messages, Commit, curView[self], self))
-                            THEN /\ \E m \in { m \in Messages : self \in m.dest /\ self \notin m.received }:
-                                      Messages' = (        (Messages \ {m}) \union
-                                                   {MarkMessageReceivedBy(m, self)})
+                      /\ IF ~CheckVotesForQC(receivedVotes[self])
+                            THEN /\ \E m \in { m \in RepliesToLeader : m.type = Commit /\ m.viewNum = curView[self] }:
+                                      receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
                                  /\ pc' = [pc EXCEPT ![self] = "LeaderDecide"]
-                                 /\ UNCHANGED << commitQC, committedBlocks >>
-                            ELSE /\ LET votes == ReceivedVotes(Messages, Commit, curView[self], self) IN
-                                      /\ Assert(CheckVotesForQC(votes), 
-                                                "Failure of assertion at line 65, column 9 of macro called at line 99, column 5.")
-                                      /\ commitQC' = [commitQC EXCEPT ![self] = GenerateQC(votes)]
-                                      /\ Messages' = (Messages \union {(CreateBroadcastMessage(Decide, curView[self], Null, commitQC'[self], self))})
+                                 /\ UNCHANGED << BroadcastMessages, commitQC, 
+                                                 committedBlocks >>
+                            ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
+                                           "Failure of assertion at line 62, column 5 of macro called at line 102, column 5.")
+                                 /\ commitQC' = [commitQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
+                                 /\ BroadcastMessages' = (BroadcastMessages \union {(CreateMessage(Decide, curView[self], Null, commitQC'[self], self))})
                                  /\ committedBlocks' = [committedBlocks EXCEPT ![self] = committedBlocks[self] \union {commitQC'[self].block}]
+                                 /\ receivedVotes' = [receivedVotes EXCEPT ![self] = {}]
                                  /\ pc' = [pc EXCEPT ![self] = "Done"]
-                      /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
-                                      prepareQC, lockedQC >>
+                      /\ UNCHANGED << NextBlockId, AllBlocks, RepliesToLeader, 
+                                      curView, leader, prepareQC, lockedQC >>
 
 ReplicaPrepare(self) == /\ pc[self] = "ReplicaPrepare"
-                        /\ LET leader == Leaders[curView[self]] IN
-                             \E m \in FilterMessages(leader, self):
-                               IF m.type # Prepare \/ m.viewNum # curView[self]
-                                  THEN /\ Messages' = (        (Messages \ {m}) \union
-                                                       {MarkMessageReceivedBy(m, self)})
-                                       /\ pc' = [pc EXCEPT ![self] = "ReplicaPrepare"]
-                                  ELSE /\ IF ~DirectlyExtends(m.block, m.justify.block)
-                                             THEN /\ Messages' = (        (Messages \ {m}) \union
-                                                                  {MarkMessageReceivedBy(m, self)})
-                                             ELSE /\ IF ~( \/ BlockExtends(m.block, lockedQC[self].block, AllBlocks)
-                                                           \/ m.justify.viewNum > lockedQC[self].viewNum )
-                                                        THEN /\ PrintT(<<"Proposed block fails SafeNode:", m>>)
-                                                             /\ Messages' = (        (Messages \ {m}) \union
-                                                                             {MarkMessageReceivedBy(m, self)})
-                                                        ELSE /\ Messages' = (            (Messages \ {m}) \union {
-                                                                                 MarkMessageReceivedBy(m, self),
-                                                                                 CreateMessageTo(Prepare, curView[self], (m.block), Null, self, leader)
-                                                                             })
-                                       /\ pc' = [pc EXCEPT ![self] = "ReplicaPreCommit"]
-                        /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
+                        /\ \E m \in FilterMessages(Prepare, curView[self], leader[self]):
+                             IF DirectlyExtends(m.block, m.justify.block)
+                                 /\ ( BlockExtends(m.block, lockedQC[self].block, AllBlocks)
+                                      \/ m.justify.viewNum > lockedQC[self].viewNum )
+                                THEN /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                                CreateMessage(Prepare, curView[self], (m.block), Null, self)
+                                                            })
+                                ELSE /\ TRUE
+                                     /\ UNCHANGED RepliesToLeader
+                        /\ pc' = [pc EXCEPT ![self] = "ReplicaPreCommit"]
+                        /\ UNCHANGED << NextBlockId, AllBlocks, 
+                                        BroadcastMessages, curView, leader, 
                                         prepareQC, lockedQC, commitQC, 
-                                        committedBlocks >>
+                                        committedBlocks, receivedVotes >>
 
 ReplicaPreCommit(self) == /\ pc[self] = "ReplicaPreCommit"
-                          /\ LET leader == Leaders[curView[self]] IN
-                               \E m \in FilterMessages(leader, self):
-                                 IF m.justify.type # Prepare \/ m.justify.viewNum # curView[self]
-                                    THEN /\ Messages' = (        (Messages \ {m}) \union
-                                                         {MarkMessageReceivedBy(m, self)})
-                                         /\ pc' = [pc EXCEPT ![self] = "ReplicaPreCommit"]
-                                         /\ UNCHANGED prepareQC
-                                    ELSE /\ prepareQC' = [prepareQC EXCEPT ![self] = m.justify]
-                                         /\ Messages' = (            (Messages \ {m}) \union {
-                                                             MarkMessageReceivedBy(m, self),
-                                                             CreateMessageTo(PreCommit, curView[self], (m.justify.block), Null, self, leader)
-                                                         })
-                                         /\ pc' = [pc EXCEPT ![self] = "ReplicaCommit"]
-                          /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
-                                          lockedQC, commitQC, committedBlocks >>
+                          /\ \E m \in FilterMessages(PreCommit, curView[self], leader[self]):
+                               IF m.justify.type = Prepare /\ m.justify.viewNum = curView[self]
+                                  THEN /\ prepareQC' = [prepareQC EXCEPT ![self] = m.justify]
+                                       /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                                  CreateMessage(PreCommit, curView[self], (m.justify.block), Null, self)
+                                                              })
+                                  ELSE /\ TRUE
+                                       /\ UNCHANGED << RepliesToLeader, 
+                                                       prepareQC >>
+                          /\ pc' = [pc EXCEPT ![self] = "ReplicaCommit"]
+                          /\ UNCHANGED << NextBlockId, AllBlocks, 
+                                          BroadcastMessages, curView, leader, 
+                                          lockedQC, commitQC, committedBlocks, 
+                                          receivedVotes >>
 
 ReplicaCommit(self) == /\ pc[self] = "ReplicaCommit"
-                       /\ LET leader == Leaders[curView[self]] IN
-                            \E m \in FilterMessages(leader, self):
-                              IF m.justify.type # PreCommit \/ m.justify.viewNum # curView[self]
-                                 THEN /\ Messages' = (        (Messages \ {m}) \union
-                                                      {MarkMessageReceivedBy(m, self)})
-                                      /\ pc' = [pc EXCEPT ![self] = "ReplicaCommit"]
-                                      /\ UNCHANGED lockedQC
-                                 ELSE /\ lockedQC' = [lockedQC EXCEPT ![self] = m.justify]
-                                      /\ Messages' = (            (Messages \ {m}) \union {
-                                                          MarkMessageReceivedBy(m, self),
-                                                          CreateMessageTo(Commit, curView[self], (m.justify.block), Null, self, leader)
-                                                      })
-                                      /\ pc' = [pc EXCEPT ![self] = "ReplicaDecide"]
-                       /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
-                                       prepareQC, commitQC, committedBlocks >>
+                       /\ \E m \in FilterMessages(Commit, curView[self], leader[self]):
+                            IF m.justify.type = PreCommit /\ m.justify.viewNum = curView[self]
+                               THEN /\ lockedQC' = [lockedQC EXCEPT ![self] = m.justify]
+                                    /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                               CreateMessage(Commit, curView[self], (m.justify.block), Null, self)
+                                                           })
+                               ELSE /\ TRUE
+                                    /\ UNCHANGED << RepliesToLeader, lockedQC >>
+                       /\ pc' = [pc EXCEPT ![self] = "ReplicaDecide"]
+                       /\ UNCHANGED << NextBlockId, AllBlocks, 
+                                       BroadcastMessages, curView, leader, 
+                                       prepareQC, commitQC, committedBlocks, 
+                                       receivedVotes >>
 
 ReplicaDecide(self) == /\ pc[self] = "ReplicaDecide"
-                       /\ LET leader == Leaders[curView[self]] IN
-                            \E m \in FilterMessages(leader, self):
-                              IF m.justify.type # Commit \/ m.justify.viewNum # curView[self]
-                                 THEN /\ Messages' = (        (Messages \ {m}) \union
-                                                      {MarkMessageReceivedBy(m, self)})
-                                      /\ pc' = [pc EXCEPT ![self] = "ReplicaCommit"]
-                                      /\ UNCHANGED committedBlocks
-                                 ELSE /\ committedBlocks' = [committedBlocks EXCEPT ![self] = committedBlocks[self] \union {m.justify.block}]
-                                      /\ pc' = [pc EXCEPT ![self] = "Done"]
-                                      /\ UNCHANGED Messages
-                       /\ UNCHANGED << NextBlockId, AllBlocks, curView, 
-                                       prepareQC, lockedQC, commitQC >>
+                       /\ \E m \in FilterMessages(Decide, curView[self], leader[self]):
+                            IF m.justify.type = Commit /\ m.justify.viewNum = curView[self]
+                               THEN /\ committedBlocks' = [committedBlocks EXCEPT ![self] = committedBlocks[self] \union {m.justify.block}]
+                               ELSE /\ TRUE
+                                    /\ UNCHANGED committedBlocks
+                       /\ pc' = [pc EXCEPT ![self] = "Done"]
+                       /\ UNCHANGED << NextBlockId, AllBlocks, 
+                                       BroadcastMessages, RepliesToLeader, 
+                                       curView, leader, prepareQC, lockedQC, 
+                                       commitQC, receivedVotes >>
 
 rep(self) == LeaderCheck(self) \/ Propose(self) \/ LeaderPreCommit(self)
                 \/ LeaderCommit(self) \/ LeaderDecide(self)
@@ -352,16 +332,12 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 TypeInvariant ==
     /\ NextBlockId \in Nat
     /\ \A b \in AllBlocks : b \in BlockType
-    /\ \A m \in Messages : m \in MessageType
+    /\ \A m \in BroadcastMessages : m \in MessageType
+    /\ \A m \in RepliesToLeader : m \in MessageType
     /\ \A self \in DOMAIN curView : curView[self] \in Nat
     /\ \A self \in DOMAIN prepareQC : prepareQC[self] \in QCType
 
-AllMessagesEventuallyReceived == <>(
-    \A m \in Messages : MessageReceived(m)
-)
-
 AllDone == \A self \in ProcSet: pc[self] = "Done"
-MsgsReceived == AllDone => \A m \in Messages : MessageReceived(m)
 
 AllEventuallyCommitABlock == AllDone => \A r \in Replicas : Cardinality(committedBlocks[r]) > 0
 

@@ -14,7 +14,7 @@ variables
     \* Global cache of all blocks, assumed in paper that all nodes can just get all blocks.
     AllBlocks = {GenesisBlock};
 
-    \* Messages broadcast to all replicas
+    \* All messages sent by replicas
     Messages = {};
 
 define

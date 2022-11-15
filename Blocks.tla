@@ -46,6 +46,7 @@ QCType == [
 
 GenesisQC(type) == [ type |-> type, viewNum |-> 0, block |-> GenesisBlock ]
 
+\* Votes are just Messages (see below) with votes for a block
 CheckVotesForQC(votes) ==
     /\ LET x == CHOOSE v \in votes : TRUE IN
         /\ \A v \in votes : v.type = x.type /\ v.viewNum = x.viewNum
@@ -53,6 +54,8 @@ CheckVotesForQC(votes) ==
     \* TODO: Check block??
     \* or received ?
 
+\* KMS NOTE: have to filter for blocks that aren't null because of assymetry
+\* in how leader sends broadcast and how votes are sent back.
 GenerateQC(votes) ==
     LET v == CHOOSE v \in votes : v.block # Null IN
     [ type |-> v.type, viewNum |-> v.viewNum, block |-> v.block ]

@@ -86,4 +86,9 @@ CreateMessage(type, vn, block, justify, sender) == [
     vote |-> sender
 ]
 
+\* Utility to get the message with a justify QC with max viewNum
+\* Used in NewView
+MaxJustifyVN(M) == CHOOSE m \in M : \A x \in M :
+        m.justify.viewNum >= x.justify.viewNum
+
 =============================================================================

@@ -87,6 +87,16 @@ ASSUME Assert(
     /\ myQC.viewNum = 42
     /\ myQC.block = pBlock, "QC is correct")
 
+MakeQC(type, vn, block) == [ type |-> type, viewNum |-> vn, block |-> block ]
+
+NewViewMsgs == {
+    CreateMessage(NewView, 42, Null, MakeQC(Prepare, 3, pBlock), r3),
+    CreateMessage(NewView, 42, Null, MakeQC(Prepare, 7, pBlock), r1),
+    CreateMessage(NewView, 42, Null, MakeQC(Prepare, 2, pBlock), r2)
+}
+
+ASSUME Assert(MaxJustifyVN(NewViewMsgs).vote = r1, "Max works")
+
 =============================================================================
 \* Modification History
 \* Last modified Fri Oct 07 18:34:03 SGT 2022 by kshehata

@@ -35,7 +35,7 @@ NotarizedBlocks(msgs) ==
     IN { b \in blocks: IsNotarized(b, msgs) }
 
 \* return TRUE if b2 directly extends b1 (b1<-b2) FALSE otherwise
-CheckDirectlyExtends(b2, b1) == b2.parent = b1.id
+CheckDirectlyExtends(b2, b1) == b2.parent = b1.id /\ b2.epoch > b1.epoch
 
 RECURSIVE CheckExtends(_, _, _)
 \* returns TRUE if b2 extends b1: b1<-...<-b2, from all received `blocks`

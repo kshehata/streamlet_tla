@@ -30,6 +30,11 @@ define
     UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
     LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
     AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
+    BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
+    NewProposal(m, node) == /\ m.block.epoch = curEpoch
+                            /\ m.vote = Leaders[curEpoch]
+                            /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
+    NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
     Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 end define;
 
@@ -65,10 +70,7 @@ begin
                 with 
                     m \in UnreceivedMsgsBy(self) 
                 do
-                    if  /\ m.block.epoch = curEpoch
-                        /\ m.vote = Leaders[curEpoch]
-                        /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[self]) }
-                        /\ ~AlreadyVoted(m.block, self) then
+                    if NewProposalYetVoted(m, self) then
                         \* vote for the new proposal
                         SendMsg(m.block); 
                     else
@@ -85,6 +87,35 @@ begin
         end if;
 end process;
 
+fair process byzantine \in FaultyNodes
+begin
+    ByzStart:
+        while localEpochs[self] = curEpoch do
+            either
+                with parent \in ReceivedBlocksBy(self), e \in parent.epoch + 1..NumEpochs do
+                    CreateBlock(e, parent);
+                    SendMsg(newBlock);
+                end with;
+            or 
+                with m \in UnreceivedMsgsBy(self) do 
+                    either
+                        if ~AlreadyVoted(m.block, self) then
+                            SendMsg(m.block);
+                        end if;
+                    or
+                        RecvMsg(m);
+                    end either; 
+                end with;
+            end either;
+        end while;    
+
+        \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
+        if curEpoch <= NumEpochs then
+            localEpochs[self] := localEpochs[self] + 1;
+            goto ByzStart;
+        end if;
+end process
+
 fair process Timer = "timer"
 begin
     NextRound:
@@ -100,7 +131,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "b40578ea" /\ chksum(tla) = "f8cdbbf")
+\* BEGIN TRANSLATION (chksum(pcal) = "2e40c9ea" /\ chksum(tla) = "99872bc0")
 VARIABLES sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
@@ -108,13 +139,18 @@ ReceivedBlocksBy(node) == LET msgs == localMsgs[node] IN { m.block: m \in msgs }
 UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
 LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
 AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
+BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
+NewProposal(m, node) == /\ m.block.epoch = curEpoch
+                        /\ m.vote = Leaders[curEpoch]
+                        /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
+NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
 Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 
 
 vars == << sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
         >>
 
-ProcSet == (CorrectNodes) \cup {"timer"}
+ProcSet == (CorrectNodes) \cup (FaultyNodes) \cup {"timer"}
 
 Init == (* Global variables *)
         /\ sent = {}
@@ -124,6 +160,7 @@ Init == (* Global variables *)
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Start"
+                                        [] self \in FaultyNodes -> "ByzStart"
                                         [] self = "timer" -> "NextRound"]
 
 Start(self) == /\ pc[self] = "Start"
@@ -136,10 +173,7 @@ Start(self) == /\ pc[self] = "Start"
                                                /\ sent' = (sent \union {msg})
                                                /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
                                 ELSE /\ \E m \in UnreceivedMsgsBy(self):
-                                          IF /\ m.block.epoch = curEpoch
-                                             /\ m.vote = Leaders[curEpoch]
-                                             /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[self]) }
-                                             /\ ~AlreadyVoted(m.block, self)
+                                          IF NewProposalYetVoted(m, self)
                                              THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
                                                        /\ sent' = (sent \union {msg})
                                                        /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
@@ -158,6 +192,39 @@ Start(self) == /\ pc[self] = "Start"
                /\ UNCHANGED curEpoch
 
 honest(self) == Start(self)
+
+ByzStart(self) == /\ pc[self] = "ByzStart"
+                  /\ IF localEpochs[self] = curEpoch
+                        THEN /\ \/ /\ \E parent \in ReceivedBlocksBy(self):
+                                        \E e \in parent.epoch + 1..NumEpochs:
+                                          /\ newBlock' = [id |-> nextBlockId, epoch |-> e, parent |-> parent.id]
+                                          /\ nextBlockId' = nextBlockId + 1
+                                          /\ LET msg == [block |-> newBlock', vote |-> self] IN
+                                               /\ sent' = (sent \union {msg})
+                                               /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                \/ /\ \E m \in UnreceivedMsgsBy(self):
+                                        \/ /\ IF ~AlreadyVoted(m.block, self)
+                                                 THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
+                                                           /\ sent' = (sent \union {msg})
+                                                           /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                                 ELSE /\ TRUE
+                                                      /\ UNCHANGED << sent, 
+                                                                      localMsgs >>
+                                        \/ /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
+                                           /\ sent' = sent
+                                   /\ UNCHANGED <<nextBlockId, newBlock>>
+                             /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
+                             /\ UNCHANGED localEpochs
+                        ELSE /\ IF curEpoch <= NumEpochs
+                                   THEN /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
+                                        /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
+                                   ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
+                                        /\ UNCHANGED localEpochs
+                             /\ UNCHANGED << sent, localMsgs, nextBlockId, 
+                                             newBlock >>
+                  /\ UNCHANGED curEpoch
+
+byzantine(self) == ByzStart(self)
 
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF curEpoch <= NumEpochs
@@ -181,10 +248,12 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
 
 Next == Timer
            \/ (\E self \in CorrectNodes: honest(self))
+           \/ (\E self \in FaultyNodes: byzantine(self))
            \/ Terminating
 
 Spec == /\ Init /\ [][Next]_vars
         /\ \A self \in CorrectNodes : WF_vars(honest(self))
+        /\ \A self \in FaultyNodes : WF_vars(byzantine(self))
         /\ WF_vars(Timer)
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
@@ -226,8 +295,8 @@ HonestLeaderShouldPropose == [](
 
 \* honest nodes should only voted for one block per epoch
 NoDoubleVotePerEpoch == [](
-    \A m \in sent: m.vote \in CorrectNodes =>
-        ~(\E m2 \in sent: m2.block.epoch = m.block.epoch /\ m2.block.id # m.block.id)
+    \A r \in CorrectNodes:
+        \A e \in 1..curEpoch: Cardinality({b \in BlocksVotedBy(r): b.epoch = e}) <= 1
 )
 
 \* before GST, no guarantee on message delivery 

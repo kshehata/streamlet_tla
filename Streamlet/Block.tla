@@ -1,5 +1,5 @@
 ---------------------------- MODULE Block ----------------------------
-EXTENDS Naturals, FiniteSets, Integers
+EXTENDS Naturals, FiniteSets, Integers, TLC
 CONSTANT Nodes, NotarizedThreshold
 ASSUME Nodes # {} /\ NotarizedThreshold > 0
 
@@ -109,4 +109,25 @@ CheckConflictFree(chain1, chain2) ==
         \/
             /\ l1 > l2
             /\ chain2 \subseteq chain1
+
+(* More utility functions/operators  *)
+
+\* return f' where f'[key] = newValue, the rest unchanged
+UpdateFuncEntry(f, key, newValue) ==
+    [k \in (DOMAIN f \ {key}) |-> f[k]] @@ key :> newValue
+
+RECURSIVE BatchUpdate(_,_,_)
+\* output an updated recv
+BatchUpdate(recv, msgs, node) ==
+    IF msgs = {} THEN
+        recv
+    ELSE 
+        LET m == CHOOSE m \in msgs: TRUE
+        IN 
+            IF m \in DOMAIN recv THEN 
+                LET updated == UpdateFuncEntry(recv, m, recv[m] \union {node})     
+                IN BatchUpdate(updated, msgs \ {m}, node)
+            ELSE 
+                LET updated == (recv @@ m :> {node})
+                IN BatchUpdate(updated, msgs \ {m}, node)            
 =============================================================================

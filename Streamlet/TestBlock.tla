@@ -102,4 +102,21 @@ ASSUME CheckConflictFree(chain1, chain2) = FALSE
 ASSUME CheckConflictFree(chain2, chain3) = TRUE
 ASSUME CheckConflictFree(chain2, chain4) = FALSE
 ASSUME CheckConflictFree(chain1, chain4) = FALSE
+
+(* testing utility functions *)
+OldFn == (b1 :> 1 @@ b2 :> 2 @@ b4 :> 4)
+ASSUME UpdateFuncEntry(OldFn, b2, 3) = (b1 :> 1 @@ b2 :> 3 @@ b4 :> 4)
+ASSUME UpdateFuncEntry(OldFn, b1, 5) = (b1 :> 5 @@ b2 :> 2 @@ b4 :> 4)
+
+\* Batch update logic
+m1 == [block |-> b1, vote |-> n2] 
+m2 == [block |-> b1, vote |-> n3]
+m3 == [block |-> b4, vote |-> n1]
+m4 == [block |-> b6, vote |-> n3]
+Recv == (m1 :> {n2} @@ m2 :> {n2, n3} @@ m3 :> {n3})
+NewMsgs == {m1, m2, m3, m4}
+ExpectedRecv(node) == (m1 :> {node, n2} @@ m2 :> {node, n2, n3} @@ m3 :> {node, n3} @@ m4 :> {node})
+
+ASSUME BatchUpdate(Recv, NewMsgs, n1) = ExpectedRecv(n1)
+ASSUME BatchUpdate(Recv, NewMsgs, n2) = ExpectedRecv(n2)
 =============================================================================

@@ -33,6 +33,10 @@ define
     UnreceivedMsgsBy(node) == {m \in sent: node \notin recv[m]}
     LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
     AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
+    NewProposal(m, node) == /\ m.block.epoch = curEpoch
+                            /\ m.vote = Leaders[curEpoch]
+                            /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(node)) }
+    NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
 end define;
 
 macro CreateBlock(epoch, parent) begin
@@ -46,6 +50,10 @@ macro RecvMsg(msg) begin
     else
         recv := recv @@ msg :> {self};
     end if;
+end macro
+
+macro RecvMsgs(msgs) begin
+    recv := BatchUpdate(recv, msgs, self);
 end macro
 
 macro SendMsg(block) begin
@@ -69,16 +77,14 @@ begin
             else
                 \* receive others' votes
                 with 
-                    m \in UnreceivedMsgsBy(self) 
+                    msgs = UnreceivedMsgsBy(self) 
                 do
-                    if  /\ m.block.epoch = curEpoch
-                        /\ m.vote = Leaders[curEpoch]
-                        /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
-                        /\ ~AlreadyVoted(m.block, self) then
-                        \* vote for the new proposal
-                        SendMsg(m.block); 
+                    if \E m \in msgs: NewProposalYetVoted(m, self) then 
+                        with m = CHOOSE m \in msgs: NewProposalYetVoted(m, self) do 
+                            SendMsg(m.block);
+                        end with;
                     else
-                        RecvMsg(m);
+                        RecvMsgs(msgs);                        
                     end if;
                 end with;
             end if;
@@ -106,7 +112,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "b25d6cc4" /\ chksum(tla) = "b7cff2a5")
+\* BEGIN TRANSLATION (chksum(pcal) = "6d21dc65" /\ chksum(tla) = "948b140d")
 VARIABLES sent, recv, curEpoch, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
@@ -115,6 +121,10 @@ ReceivedBlocksBy(node) == LET msgs == ReceivedMsgsBy(node) IN { m.block: m \in m
 UnreceivedMsgsBy(node) == {m \in sent: node \notin recv[m]}
 LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
 AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
+NewProposal(m, node) == /\ m.block.epoch = curEpoch
+                        /\ m.vote = Leaders[curEpoch]
+                        /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(node)) }
+NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
 
 
 vars == << sent, recv, curEpoch, localEpochs, nextBlockId, newBlock, pc >>
@@ -142,19 +152,15 @@ Start(self) == /\ pc[self] = "Start"
                                                /\ IF msg \in DOMAIN recv
                                                      THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
                                                      ELSE /\ recv' = (recv @@ msg :> {self})
-                                ELSE /\ \E m \in UnreceivedMsgsBy(self):
-                                          IF /\ m.block.epoch = curEpoch
-                                             /\ m.vote = Leaders[curEpoch]
-                                             /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
-                                             /\ ~AlreadyVoted(m.block, self)
-                                             THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
-                                                       /\ sent' = (sent \union {msg})
-                                                       /\ IF msg \in DOMAIN recv
-                                                             THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
-                                                             ELSE /\ recv' = (recv @@ msg :> {self})
-                                             ELSE /\ IF m \in DOMAIN recv
-                                                        THEN /\ recv' = [recv EXCEPT ![m] = @ \union {self}]
-                                                        ELSE /\ recv' = (recv @@ m :> {self})
+                                ELSE /\ LET msgs == UnreceivedMsgsBy(self) IN
+                                          IF \E m \in msgs: NewProposalYetVoted(m, self)
+                                             THEN /\ LET m == CHOOSE m \in msgs: NewProposalYetVoted(m, self) IN
+                                                       LET msg == [block |-> (m.block), vote |-> self] IN
+                                                         /\ sent' = (sent \union {msg})
+                                                         /\ IF msg \in DOMAIN recv
+                                                               THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
+                                                               ELSE /\ recv' = (recv @@ msg :> {self})
+                                             ELSE /\ recv' = BatchUpdate(recv, msgs, self)
                                                   /\ sent' = sent
                                      /\ UNCHANGED << nextBlockId, newBlock >>
                           /\ pc' = [pc EXCEPT ![self] = "Start"]

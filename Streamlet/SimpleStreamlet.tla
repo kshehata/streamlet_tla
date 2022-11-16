@@ -58,37 +58,36 @@ end macro
 
 fair process honest \in CorrectNodes
 begin
-    Propose:
-        with
-            localEpoch = localEpochs[self],
-            msgs = ReceivedMsgsBy(self),
-            tip \in LongestNotarizedChainTips(msgs)
-        do
-            if localEpoch = curEpoch /\ Leaders[localEpoch] = self then
-                \* propose a block
-                CreateBlock(localEpochs[self], tip);
-                SendMsg(newBlock);
-            end if;
-        end with;
-    ReceiveOrSync:
+    Start:
         while localEpochs[self] = curEpoch do 
-            with m \in UnreceivedMsgsBy(self) do
-                if  /\ m.block.epoch = curEpoch
-                    /\ m.vote = Leaders[curEpoch]
-                    /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
-                    /\ ~AlreadyVoted(m.block, self)
-                then
-                    SendMsg(m.block); 
-                else
-                    RecvMsg(m);
-                end if;
-            end with;
+            if Leaders[curEpoch] = self /\ ~LeaderProposed then
+                \* propose a block as a leader
+                with tip \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) do 
+                    CreateBlock(curEpoch, tip);
+                    SendMsg(newBlock);
+                end with;
+            else
+                \* receive others' votes
+                with 
+                    m \in UnreceivedMsgsBy(self) 
+                do
+                    if  /\ m.block.epoch = curEpoch
+                        /\ m.vote = Leaders[curEpoch]
+                        /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
+                        /\ ~AlreadyVoted(m.block, self) then
+                        \* vote for the new proposal
+                        SendMsg(m.block); 
+                    else
+                        RecvMsg(m);
+                    end if;
+                end with;
+            end if;
         end while;
 
         \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
         if curEpoch <= NumEpochs then
             localEpochs[self] := localEpochs[self] + 1;
-            goto Propose;
+            goto Start;
         end if;
 end process;
 
@@ -107,7 +106,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "ba97eb3a" /\ chksum(tla) = "bdae57e4")
+\* BEGIN TRANSLATION (chksum(pcal) = "b25d6cc4" /\ chksum(tla) = "b7cff2a5")
 VARIABLES sent, recv, curEpoch, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
@@ -129,54 +128,46 @@ Init == (* Global variables *)
         /\ localEpochs = [r \in Nodes |-> curEpoch]
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
-        /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Propose"
+        /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Start"
                                         [] self = "timer" -> "NextRound"]
 
-Propose(self) == /\ pc[self] = "Propose"
-                 /\ LET localEpoch == localEpochs[self] IN
-                      LET msgs == ReceivedMsgsBy(self) IN
-                        \E tip \in LongestNotarizedChainTips(msgs):
-                          IF localEpoch = curEpoch /\ Leaders[localEpoch] = self
-                             THEN /\ newBlock' = [id |-> nextBlockId, epoch |-> (localEpochs[self]), parent |-> tip.id]
-                                  /\ nextBlockId' = nextBlockId + 1
-                                  /\ LET msg == [block |-> newBlock', vote |-> self] IN
-                                       /\ sent' = (sent \union {msg})
-                                       /\ IF msg \in DOMAIN recv
-                                             THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
-                                             ELSE /\ recv' = (recv @@ msg :> {self})
-                             ELSE /\ TRUE
-                                  /\ UNCHANGED << sent, recv, nextBlockId, 
-                                                  newBlock >>
-                 /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSync"]
-                 /\ UNCHANGED << curEpoch, localEpochs >>
+Start(self) == /\ pc[self] = "Start"
+               /\ IF localEpochs[self] = curEpoch
+                     THEN /\ IF Leaders[curEpoch] = self /\ ~LeaderProposed
+                                THEN /\ \E tip \in LongestNotarizedChainTips(ReceivedMsgsBy(self)):
+                                          /\ newBlock' = [id |-> nextBlockId, epoch |-> curEpoch, parent |-> tip.id]
+                                          /\ nextBlockId' = nextBlockId + 1
+                                          /\ LET msg == [block |-> newBlock', vote |-> self] IN
+                                               /\ sent' = (sent \union {msg})
+                                               /\ IF msg \in DOMAIN recv
+                                                     THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
+                                                     ELSE /\ recv' = (recv @@ msg :> {self})
+                                ELSE /\ \E m \in UnreceivedMsgsBy(self):
+                                          IF /\ m.block.epoch = curEpoch
+                                             /\ m.vote = Leaders[curEpoch]
+                                             /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
+                                             /\ ~AlreadyVoted(m.block, self)
+                                             THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
+                                                       /\ sent' = (sent \union {msg})
+                                                       /\ IF msg \in DOMAIN recv
+                                                             THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
+                                                             ELSE /\ recv' = (recv @@ msg :> {self})
+                                             ELSE /\ IF m \in DOMAIN recv
+                                                        THEN /\ recv' = [recv EXCEPT ![m] = @ \union {self}]
+                                                        ELSE /\ recv' = (recv @@ m :> {self})
+                                                  /\ sent' = sent
+                                     /\ UNCHANGED << nextBlockId, newBlock >>
+                          /\ pc' = [pc EXCEPT ![self] = "Start"]
+                          /\ UNCHANGED localEpochs
+                     ELSE /\ IF curEpoch <= NumEpochs
+                                THEN /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
+                                     /\ pc' = [pc EXCEPT ![self] = "Start"]
+                                ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
+                                     /\ UNCHANGED localEpochs
+                          /\ UNCHANGED << sent, recv, nextBlockId, newBlock >>
+               /\ UNCHANGED curEpoch
 
-ReceiveOrSync(self) == /\ pc[self] = "ReceiveOrSync"
-                       /\ IF localEpochs[self] = curEpoch
-                             THEN /\ \E m \in UnreceivedMsgsBy(self):
-                                       IF /\ m.block.epoch = curEpoch
-                                          /\ m.vote = Leaders[curEpoch]
-                                          /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(ReceivedMsgsBy(self)) }
-                                          /\ ~AlreadyVoted(m.block, self)
-                                          THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
-                                                    /\ sent' = (sent \union {msg})
-                                                    /\ IF msg \in DOMAIN recv
-                                                          THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
-                                                          ELSE /\ recv' = (recv @@ msg :> {self})
-                                          ELSE /\ IF m \in DOMAIN recv
-                                                     THEN /\ recv' = [recv EXCEPT ![m] = @ \union {self}]
-                                                     ELSE /\ recv' = (recv @@ m :> {self})
-                                               /\ sent' = sent
-                                  /\ pc' = [pc EXCEPT ![self] = "ReceiveOrSync"]
-                                  /\ UNCHANGED localEpochs
-                             ELSE /\ IF curEpoch <= NumEpochs
-                                        THEN /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
-                                             /\ pc' = [pc EXCEPT ![self] = "Propose"]
-                                        ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                                             /\ UNCHANGED localEpochs
-                                  /\ UNCHANGED << sent, recv >>
-                       /\ UNCHANGED << curEpoch, nextBlockId, newBlock >>
-
-honest(self) == Propose(self) \/ ReceiveOrSync(self)
+honest(self) == Start(self)
 
 NextRound == /\ pc["timer"] = "NextRound"
              /\ IF curEpoch <= NumEpochs

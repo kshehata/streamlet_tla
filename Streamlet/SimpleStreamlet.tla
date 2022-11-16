@@ -61,7 +61,6 @@ macro SendMsg(block) begin
         sent := sent \union {msg};
         RecvMsg(msg); \* simulate sending to itself
     end with;
-    
 end macro
 
 fair process honest \in CorrectNodes
@@ -80,8 +79,12 @@ begin
                     msgs = UnreceivedMsgsBy(self) 
                 do
                     if \E m \in msgs: NewProposalYetVoted(m, self) then 
-                        with m = CHOOSE m \in msgs: NewProposalYetVoted(m, self) do 
-                            SendMsg(m.block);
+                        with 
+                            m = CHOOSE m \in msgs: NewProposalYetVoted(m, self),
+                            newMsg = [block |-> m.block, vote |-> self] 
+                        do 
+                            sent := sent \union {newMsg};
+                            RecvMsgs(msgs \union {newMsg});
                         end with;
                     else
                         RecvMsgs(msgs);                        
@@ -112,7 +115,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "6d21dc65" /\ chksum(tla) = "948b140d")
+\* BEGIN TRANSLATION (chksum(pcal) = "4cd668c9" /\ chksum(tla) = "d691e19")
 VARIABLES sent, recv, curEpoch, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
@@ -155,11 +158,9 @@ Start(self) == /\ pc[self] = "Start"
                                 ELSE /\ LET msgs == UnreceivedMsgsBy(self) IN
                                           IF \E m \in msgs: NewProposalYetVoted(m, self)
                                              THEN /\ LET m == CHOOSE m \in msgs: NewProposalYetVoted(m, self) IN
-                                                       LET msg == [block |-> (m.block), vote |-> self] IN
-                                                         /\ sent' = (sent \union {msg})
-                                                         /\ IF msg \in DOMAIN recv
-                                                               THEN /\ recv' = [recv EXCEPT ![msg] = @ \union {self}]
-                                                               ELSE /\ recv' = (recv @@ msg :> {self})
+                                                       LET newMsg == [block |-> m.block, vote |-> self] IN
+                                                         /\ sent' = (sent \union {newMsg})
+                                                         /\ recv' = BatchUpdate(recv, (msgs \union {newMsg}), self)
                                              ELSE /\ recv' = BatchUpdate(recv, msgs, self)
                                                   /\ sent' = sent
                                      /\ UNCHANGED << nextBlockId, newBlock >>

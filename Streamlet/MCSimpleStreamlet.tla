@@ -9,5 +9,5 @@ ConstFaultyNodes == {a1}
 NodePerms == Permutations(ConstCorrectNodes) \cup Permutations(ConstFaultyNodes)
 CorrectNdoePerm == Permutations(ConstCorrectNodes)
 
-ConstLeaders == <<h2, h1, h3, a1>>
+ConstLeaders == <<h1, a1, h2, h3>>
 ====

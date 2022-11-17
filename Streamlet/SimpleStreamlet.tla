@@ -29,13 +29,13 @@ variables
 define
     ReceivedBlocksBy(node) == LET msgs == localMsgs[node] IN { m.block: m \in msgs }
     UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
-    LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
+    AlreadyProposed(node) == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = node
+    LeaderProposed == AlreadyProposed(Leaders[curEpoch])
     AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
     BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
     NewProposal(m, node) == /\ m.block.epoch = curEpoch
                             /\ m.vote = Leaders[curEpoch]
                             /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
-    NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
     Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 end define;
 
@@ -71,7 +71,7 @@ begin
                 with 
                     m \in UnreceivedMsgsBy(self) 
                 do
-                    if NewProposalYetVoted(m, self) then
+                    if NewProposal(m, self) /\ ~(\E b \in BlocksVotedBy(self): b.epoch = curEpoch) then
                         \* vote for the new proposal
                         SendMsg(m.block); 
                     else
@@ -92,22 +92,26 @@ fair process byzantine \in FaultyNodes
 begin
     ByzStart:
         while localEpochs[self] = curEpoch do
-            either
-                with parent \in ReceivedBlocksBy(self), e \in parent.epoch + 1..NumEpochs do
-                    CreateBlock(e, parent);
+            if Leaders[curEpoch] = self then
+                \* choose random parent to build on, regardless if it's the longest notarized chaintip
+                with parent \in ReceivedBlocksBy(self) do
+                    CreateBlock(curEpoch, parent);
                     SendMsg(newBlock);
                 end with;
-            or 
+            else
                 with m \in UnreceivedMsgsBy(self) do 
-                    either
-                        if ~AlreadyVoted(m.block, self) then
+                    if ~AlreadyVoted(m.block, self) then
+                        \* randomly choose to vote on block (if haven't voted before)
+                        either
                             SendMsg(m.block);
-                        end if;
-                    or
+                        or
+                            RecvMsg(m);
+                        end either;
+                    else
                         RecvMsg(m);
-                    end either; 
+                    end if;
                 end with;
-            end either;
+            end if;
         end while;    
 
         \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
@@ -132,19 +136,19 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "2e40c9ea" /\ chksum(tla) = "99872bc0")
+\* BEGIN TRANSLATION (chksum(pcal) = "94ca13d9" /\ chksum(tla) = "21b3cccf")
 VARIABLES sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
 ReceivedBlocksBy(node) == LET msgs == localMsgs[node] IN { m.block: m \in msgs }
 UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
-LeaderProposed == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]
+AlreadyProposed(node) == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = node
+LeaderProposed == AlreadyProposed(Leaders[curEpoch])
 AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
 BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
 NewProposal(m, node) == /\ m.block.epoch = curEpoch
                         /\ m.vote = Leaders[curEpoch]
                         /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
-NewProposalYetVoted(m, node) == NewProposal(m, node) /\ ~AlreadyVoted(m.block, node)
 Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 
 
@@ -174,7 +178,7 @@ Start(self) == /\ pc[self] = "Start"
                                                /\ sent' = (sent \union {msg})
                                                /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
                                 ELSE /\ \E m \in UnreceivedMsgsBy(self):
-                                          IF NewProposalYetVoted(m, self)
+                                          IF NewProposal(m, self) /\ ~(\E b \in BlocksVotedBy(self): b.epoch = curEpoch)
                                              THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
                                                        /\ sent' = (sent \union {msg})
                                                        /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
@@ -196,24 +200,23 @@ honest(self) == Start(self)
 
 ByzStart(self) == /\ pc[self] = "ByzStart"
                   /\ IF localEpochs[self] = curEpoch
-                        THEN /\ \/ /\ \E parent \in ReceivedBlocksBy(self):
-                                        \E e \in parent.epoch + 1..NumEpochs:
-                                          /\ newBlock' = [id |-> nextBlockId, epoch |-> e, parent |-> parent.id]
-                                          /\ nextBlockId' = nextBlockId + 1
-                                          /\ LET msg == [block |-> newBlock', vote |-> self] IN
-                                               /\ sent' = (sent \union {msg})
-                                               /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
-                                \/ /\ \E m \in UnreceivedMsgsBy(self):
-                                        \/ /\ IF ~AlreadyVoted(m.block, self)
-                                                 THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
-                                                           /\ sent' = (sent \union {msg})
-                                                           /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
-                                                 ELSE /\ TRUE
-                                                      /\ UNCHANGED << sent, 
-                                                                      localMsgs >>
-                                        \/ /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
-                                           /\ sent' = sent
-                                   /\ UNCHANGED <<nextBlockId, newBlock>>
+                        THEN /\ IF Leaders[curEpoch] = self
+                                   THEN /\ \E parent \in ReceivedBlocksBy(self):
+                                             /\ newBlock' = [id |-> nextBlockId, epoch |-> curEpoch, parent |-> parent.id]
+                                             /\ nextBlockId' = nextBlockId + 1
+                                             /\ LET msg == [block |-> newBlock', vote |-> self] IN
+                                                  /\ sent' = (sent \union {msg})
+                                                  /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                   ELSE /\ \E m \in UnreceivedMsgsBy(self):
+                                             IF ~AlreadyVoted(m.block, self)
+                                                THEN /\ \/ /\ LET msg == [block |-> (m.block), vote |-> self] IN
+                                                                /\ sent' = (sent \union {msg})
+                                                                /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                                        \/ /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
+                                                           /\ sent' = sent
+                                                ELSE /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
+                                                     /\ sent' = sent
+                                        /\ UNCHANGED << nextBlockId, newBlock >>
                              /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
                              /\ UNCHANGED localEpochs
                         ELSE /\ IF curEpoch <= NumEpochs
@@ -303,8 +306,9 @@ NoDoubleVotePerEpoch == [](
 \* before GST, no guarantee on message delivery 
 \* after GST, all messages from previous epochs should be delivered to all honest nodes.
 PartialSynchrony == [](
-    \/ curEpoch <= GST
-    \/ \A m \in sent: m.block.epoch < curEpoch => CorrectNodes \subseteq Receivers(m)
+    [curEpoch' > curEpoch => 
+        \/ curEpoch <= GST
+        \/ \A m \in sent: CorrectNodes \subseteq Receivers(m)]_curEpoch
 )
 
 \* Theorem 3 of the Streamlet paper:

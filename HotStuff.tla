@@ -236,6 +236,13 @@ FReplicaPrepare:
             ReplyWithVote(Prepare, b);
         end with;
     or
+        \* Make your own block
+        with p \in AllBlocks, b = CreateBlock(NextBlockId, p) do
+            NextBlockId := NextBlockId + 1;
+            AllBlocks := AllBlocks \union {b};
+            ReplyWithVote(Prepare, b);
+        end with;
+    or
         \* At any point timeout and go to NextView
         goto FNextView;
     or
@@ -249,6 +256,13 @@ FReplicaPreCommit:
         \* Just pick a random block to vote on
         with b \in AllBlocks do
             ReplyWithVote(PreCommit, b);
+        end with;
+    or
+        \* Make your own block
+        with p \in AllBlocks, b = CreateBlock(NextBlockId, p) do
+            NextBlockId := NextBlockId + 1;
+            AllBlocks := AllBlocks \union {b};
+            ReplyWithVote(Prepare, b);
         end with;
     or
         \* At any point timeout and go to NextView
@@ -266,13 +280,20 @@ FReplicaCommit:
             ReplyWithVote(Commit, b);
         end with;
     or
+        \* Make your own block
+        with p \in AllBlocks, b = CreateBlock(NextBlockId, p) do
+            NextBlockId := NextBlockId + 1;
+            AllBlocks := AllBlocks \union {b};
+            ReplyWithVote(Prepare, b);
+        end with;
+    or
         \* At any point timeout and go to NextView
         goto FNextView;
     end either;
 end process;
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "9f24fb64" /\ chksum(tla) = "65065f81")
+\* BEGIN TRANSLATION (chksum(pcal) = "b4aa3a12" /\ chksum(tla) = "7c132722")
 \* Process variable curView of process rep at line 82 col 5 changed to curView_
 \* Process variable leader of process rep at line 83 col 5 changed to leader_
 VARIABLES NextBlockId, AllBlocks, AllQC, BroadcastMessages, RepliesToLeader, 
@@ -537,15 +558,23 @@ FReplicaPrepare(self) == /\ pc[self] = "FReplicaPrepare"
                                                             CreateMessage(Prepare, curView[self], b, Null, self)
                                                         })
                                /\ pc' = [pc EXCEPT ![self] = "FReplicaPreCommit"]
+                               /\ UNCHANGED <<NextBlockId, AllBlocks>>
+                            \/ /\ \E p \in AllBlocks:
+                                    LET b == CreateBlock(NextBlockId, p) IN
+                                      /\ NextBlockId' = NextBlockId + 1
+                                      /\ AllBlocks' = (AllBlocks \union {b})
+                                      /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                                 CreateMessage(Prepare, curView[self], b, Null, self)
+                                                             })
+                               /\ pc' = [pc EXCEPT ![self] = "FReplicaPreCommit"]
                             \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
-                               /\ UNCHANGED RepliesToLeader
+                               /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
                             \/ /\ pc' = [pc EXCEPT ![self] = "FReplicaPreCommit"]
-                               /\ UNCHANGED RepliesToLeader
-                         /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
-                                         BroadcastMessages, curView_, leader_, 
-                                         prepareQC, lockedQC, commitQC, 
-                                         committedBlocks, receivedVotes, 
-                                         curView, leader >>
+                               /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
+                         /\ UNCHANGED << AllQC, BroadcastMessages, curView_, 
+                                         leader_, prepareQC, lockedQC, 
+                                         commitQC, committedBlocks, 
+                                         receivedVotes, curView, leader >>
 
 FReplicaPreCommit(self) == /\ pc[self] = "FReplicaPreCommit"
                            /\ \/ /\ \E b \in AllBlocks:
@@ -553,12 +582,20 @@ FReplicaPreCommit(self) == /\ pc[self] = "FReplicaPreCommit"
                                                               CreateMessage(PreCommit, curView[self], b, Null, self)
                                                           })
                                  /\ pc' = [pc EXCEPT ![self] = "FReplicaCommit"]
+                                 /\ UNCHANGED <<NextBlockId, AllBlocks>>
+                              \/ /\ \E p \in AllBlocks:
+                                      LET b == CreateBlock(NextBlockId, p) IN
+                                        /\ NextBlockId' = NextBlockId + 1
+                                        /\ AllBlocks' = (AllBlocks \union {b})
+                                        /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                                   CreateMessage(Prepare, curView[self], b, Null, self)
+                                                               })
+                                 /\ pc' = [pc EXCEPT ![self] = "FReplicaCommit"]
                               \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
-                                 /\ UNCHANGED RepliesToLeader
+                                 /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
                               \/ /\ pc' = [pc EXCEPT ![self] = "FReplicaCommit"]
-                                 /\ UNCHANGED RepliesToLeader
-                           /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
-                                           BroadcastMessages, curView_, 
+                                 /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
+                           /\ UNCHANGED << AllQC, BroadcastMessages, curView_, 
                                            leader_, prepareQC, lockedQC, 
                                            commitQC, committedBlocks, 
                                            receivedVotes, curView, leader >>
@@ -569,11 +606,19 @@ FReplicaCommit(self) == /\ pc[self] = "FReplicaCommit"
                                                            CreateMessage(Commit, curView[self], b, Null, self)
                                                        })
                               /\ pc' = [pc EXCEPT ![self] = "Done"]
+                              /\ UNCHANGED <<NextBlockId, AllBlocks>>
+                           \/ /\ \E p \in AllBlocks:
+                                   LET b == CreateBlock(NextBlockId, p) IN
+                                     /\ NextBlockId' = NextBlockId + 1
+                                     /\ AllBlocks' = (AllBlocks \union {b})
+                                     /\ RepliesToLeader' = (                   RepliesToLeader \union {
+                                                                CreateMessage(Prepare, curView[self], b, Null, self)
+                                                            })
+                              /\ pc' = [pc EXCEPT ![self] = "Done"]
                            \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
-                              /\ UNCHANGED RepliesToLeader
-                        /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
-                                        BroadcastMessages, curView_, leader_, 
-                                        prepareQC, lockedQC, commitQC, 
+                              /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
+                        /\ UNCHANGED << AllQC, BroadcastMessages, curView_, 
+                                        leader_, prepareQC, lockedQC, commitQC, 
                                         committedBlocks, receivedVotes, 
                                         curView, leader >>
 

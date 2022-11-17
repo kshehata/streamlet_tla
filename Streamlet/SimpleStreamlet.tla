@@ -12,6 +12,7 @@ ASSUME
     /\ Nodes # {}
     /\ Leaders \in Seq(Nodes)
     /\ GST < NumEpochs
+    /\ Cardinality(CorrectNodes) > 2 * Cardinality(FaultyNodes)
 
 Range(f) == { f[x] : x \in DOMAIN f }
 

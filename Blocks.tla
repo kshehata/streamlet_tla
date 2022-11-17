@@ -24,11 +24,33 @@ CreateBlock(id, parent) == [ id |-> id, parent |-> parent.id ]
 \* True if b1 extends b2 directly (i.e. with no other blocks in between)
 DirectlyExtends(b1, b2) == b1.parent = b2.id
 
+RECURSIVE NoLoopsImpl(_, _, _)
+NoLoopsImpl(b, allBlocks, blocksSeen) ==
+    \A c \in allBlocks : 
+        ( c # b /\ DirectlyExtends(c, b) ) =>
+            /\ c \notin blocksSeen
+            /\ NoLoopsImpl(c, allBlocks, blocksSeen \union {b})
+
+NoLoops(S) == \A b \in S : NoLoopsImpl(b, S, {})
+
 RECURSIVE BlockExtends(_, _, _)
 BlockExtends(b1, b2, blocks) ==
     \/ DirectlyExtends(b1, b2)
-    \/ (\E b3 \in blocks : /\ DirectlyExtends(b3, b2)
-                           /\ BlockExtends(b1, b3, blocks))
+    \/ (\E b3 \in blocks : /\ b3 # b1
+                           /\ DirectlyExtends(b1, b3)
+                           /\ BlockExtends(b3, b2, blocks))
+
+\* Returns true IFF b1 does not extend b2 and b
+BlocksDoNotConflict(b1, b2, blocks) ==
+    \/ b1 = b2
+    \/ BlockExtends(b1, b2, blocks)
+    \/ BlockExtends(b2, b1, blocks)
+
+\* Check that there are no conflicting blocks in S1 or S2
+NoConflictsInBlockSets(S1, S2, blocks) ==
+    \A b1 \in S1 : \A b2 \in S2 :
+        BlocksDoNotConflict(b1, b2, blocks)
+
 
 (***************************************************************************)
 (* Quorum Certificates (QC) *)

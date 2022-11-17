@@ -16,7 +16,17 @@ SampleBlocks == <<
 \* TODO: Need to define this somewhere common
 Range(f) == { f[x] : x \in DOMAIN f }
 
-BlockSet == Range(SampleBlocks)
+BlockSet == Range(SampleBlocks) \union {GenesisBlock}
+
+ASSUME Assert(NoLoops(BlockSet), "No loops in sample blocks")
+
+LoopBlocksSet == {
+    [ id |-> 1, parent |-> 3],
+    [ id |-> 2, parent |-> 1],
+    [ id |-> 3, parent |-> 2]
+}
+
+ASSUME Assert(~NoLoops(LoopBlocksSet), "Loops in sample blocks")
 
 ASSUME Assert(DirectlyExtends(SampleBlocks[1], GenesisBlock),
     "Block 1 Directly Extends Genesis")
@@ -57,6 +67,35 @@ ASSUME Assert(~BlockExtends(SampleBlocks[5], SampleBlocks[3], BlockSet),
 ASSUME Assert(~BlockExtends(SampleBlocks[3], SampleBlocks[5], BlockSet),
     "Block 3 Does NOT Extend Block 5")
 
+ASSUME Assert(BlocksDoNotConflict(SampleBlocks[1], SampleBlocks[1], BlockSet),
+    "Block cannot conflict with itself")
+
+ASSUME Assert(BlocksDoNotConflict(SampleBlocks[1], SampleBlocks[3], BlockSet),
+    "Blocks 1 and 3 do not conflict")
+ASSUME Assert(BlocksDoNotConflict(SampleBlocks[3], SampleBlocks[1], BlockSet),
+    "Blocks 1 and 3 do not conflict")
+ASSUME Assert(BlocksDoNotConflict(SampleBlocks[1], SampleBlocks[4], BlockSet),
+    "Blocks 1 and 4 do not conflict")
+ASSUME Assert(BlocksDoNotConflict(SampleBlocks[4], SampleBlocks[1], BlockSet),
+    "Blocks 1 and 4 do not conflict")
+
+ASSUME Assert(~BlocksDoNotConflict(SampleBlocks[1], SampleBlocks[2], BlockSet),
+    "Blocks 1 and 2 conflict")
+ASSUME Assert(~BlocksDoNotConflict(SampleBlocks[2], SampleBlocks[1], BlockSet),
+    "Blocks 1 and 2 conflict")
+ASSUME Assert(~BlocksDoNotConflict(SampleBlocks[3], SampleBlocks[5], BlockSet),
+    "Blocks 3 and 5 conflict")
+ASSUME Assert(~BlocksDoNotConflict(SampleBlocks[5], SampleBlocks[3], BlockSet),
+    "Blocks 3 and 5 conflict")
+
+ASSUME Assert(NoConflictsInBlockSets(
+    {SampleBlocks[1], SampleBlocks[4]},
+    {SampleBlocks[3], SampleBlocks[1]},
+        BlockSet), "No conflicts in samples")
+
+ASSUME Assert(~NoConflictsInBlockSets(
+    {SampleBlocks[2]}, {SampleBlocks[3], SampleBlocks[4]}, BlockSet),
+        "Two sets conflict")
 
 ASSUME Assert(GenesisQC(Prepare) \in QCType, "GenesisQC is QC Type")
 

@@ -136,6 +136,21 @@ NewViewMsgs == {
 
 ASSUME Assert(MaxJustifyVN(NewViewMsgs).vote = r1, "Max works")
 
+
+mixedVotes == EnoughVotes \union {
+    CreateMessage(PreCommit, 7, pBlock, Null, r2),
+    CreateMessage(PreCommit, 7, pBlock, Null, r1),
+    CreateMessage(PreCommit, 7, pBlock, Null, r3),
+    CreateMessage(PreCommit, 8, pBlock, Null, r2)
+}
+
+ASSUME Assert(GenerateAllQCForType(mixedVotes, Prepare) =
+    { myQC, GenesisQC(Prepare) }, "GenerateAllQCForType Prepare")
+
+ASSUME Assert(GenerateAllQCForType(mixedVotes, PreCommit) =
+    { MakeQC(PreCommit, 7, pBlock), GenesisQC(PreCommit) },
+        "GenerateAllQCForType PreCommit")
+
 =============================================================================
 \* Modification History
 \* Last modified Fri Oct 07 18:34:03 SGT 2022 by kshehata

@@ -31,7 +31,6 @@ FilterMessages(type, vn, leader) == { m \in BroadcastMessages :
             /\ m.vote = leader }
 end define;
 
-\* TODO: create the broadcast message directly?
 macro SendBroadcast(phase, block, qc) begin
     BroadcastMessages := BroadcastMessages \union
         {CreateMessage(phase, curView, block, qc, self)};
@@ -75,6 +74,17 @@ macro SendQC(voteType, phase, qc) begin
     qc := GenerateQC(receivedVotes);
     AllQC := AllQC \union {qc};
     SendBroadcast(phase, Null, qc);
+end macro;
+
+macro FaultyLeader(qcType, phase) begin
+    either
+        \* Assume adversary has ALL messages, can use any resulting QC
+        with qc \in GenerateAllQCForType(RepliesToLeader, qcType) do
+            SendBroadcast(phase, Null, qc);
+        end with;
+    or
+        goto FNextView;
+    end either;
 end macro;
 
 fair process rep \in Correct
@@ -219,14 +229,33 @@ FNextView:
 FNextView2:
     leader := Leaders[curView];
     if (self = leader) then
-        \* TODO
-        goto Done;
+        goto FPrepare;
     else
-        with qc \in {qc \in AllQC : qc.type = Prepare} do
+        with qc \in GenerateAllQCForType(RepliesToLeader, Prepare) do
             SendNewView(qc);
         end with;
         goto FReplicaPrepare;
     end if;
+
+FPrepare:
+    \* Faulty nodes don't have to wait for votes, just pick a QC and a block
+    \* Assume adversary has ALL messages, can use any resulting QC
+    \* TODO: faulty leader can send two different propose messages.
+    with qc \in GenerateAllQCForType(RepliesToLeader, Prepare) do
+        ProposeNewBlock(qc);
+    end with;
+
+FPreCommit:
+    FaultyLeader(Prepare, PreCommit);
+
+FCommit:
+    FaultyLeader(PreCommit, Commit);
+
+FDecide:
+    FaultyLeader(Commit, Decide);
+
+FLeaderDone:
+    goto FNextView;
 
 FReplicaPrepare:
     either
@@ -279,6 +308,7 @@ FReplicaCommit:
         with b \in AllBlocks do
             ReplyWithVote(Commit, b);
         end with;
+        goto FNextView;
     or
         \* Make your own block
         with p \in AllBlocks, b = CreateBlock(NextBlockId, p) do
@@ -286,6 +316,7 @@ FReplicaCommit:
             AllBlocks := AllBlocks \union {b};
             ReplyWithVote(Prepare, b);
         end with;
+        goto FNextView;
     or
         \* At any point timeout and go to NextView
         goto FNextView;
@@ -293,9 +324,9 @@ FReplicaCommit:
 end process;
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "b4aa3a12" /\ chksum(tla) = "7c132722")
-\* Process variable curView of process rep at line 82 col 5 changed to curView_
-\* Process variable leader of process rep at line 83 col 5 changed to leader_
+\* BEGIN TRANSLATION (chksum(pcal) = "289c6a4f" /\ chksum(tla) = "abfed671")
+\* Process variable curView of process rep at line 92 col 5 changed to curView_
+\* Process variable leader of process rep at line 93 col 5 changed to leader_
 VARIABLES NextBlockId, AllBlocks, AllQC, BroadcastMessages, RepliesToLeader, 
           pc
 
@@ -372,7 +403,7 @@ WaitForNewView(self) == /\ pc[self] = "WaitForNewView"
                                                    BroadcastMessages, 
                                                    prepareQC >>
                               ELSE /\ Assert(Cardinality(receivedVotes[self]) >= QCThresh, 
-                                             "Failure of assertion at line 122, column 5.")
+                                             "Failure of assertion at line 132, column 5.")
                                    /\ prepareQC' = [prepareQC EXCEPT ![self] = MaxJustifyVN(receivedVotes[self]).justify]
                                    /\ receivedVotes' = [receivedVotes EXCEPT ![self] = {}]
                                    /\ LET newBlock == CreateBlock(NextBlockId, prepareQC'[self].block) IN
@@ -395,7 +426,7 @@ LeaderPreCommit(self) == /\ pc[self] = "LeaderPreCommit"
                                     /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                     prepareQC >>
                                ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                              "Failure of assertion at line 74, column 5 of macro called at line 129, column 5.")
+                                              "Failure of assertion at line 73, column 5 of macro called at line 139, column 5.")
                                     /\ prepareQC' = [prepareQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                     /\ AllQC' = (AllQC \union {prepareQC'[self]})
                                     /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -417,7 +448,7 @@ LeaderCommit(self) == /\ pc[self] = "LeaderCommit"
                                  /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                  lockedQC >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 74, column 5 of macro called at line 134, column 5.")
+                                           "Failure of assertion at line 73, column 5 of macro called at line 144, column 5.")
                                  /\ lockedQC' = [lockedQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {lockedQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -438,7 +469,7 @@ LeaderDecide(self) == /\ pc[self] = "LeaderDecide"
                                  /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                  commitQC, committedBlocks >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 74, column 5 of macro called at line 139, column 5.")
+                                           "Failure of assertion at line 73, column 5 of macro called at line 149, column 5.")
                                  /\ commitQC' = [commitQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {commitQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -540,9 +571,9 @@ FNextView(self) == /\ pc[self] = "FNextView"
 FNextView2(self) == /\ pc[self] = "FNextView2"
                     /\ leader' = [leader EXCEPT ![self] = Leaders[curView[self]]]
                     /\ IF (self = leader'[self])
-                          THEN /\ pc' = [pc EXCEPT ![self] = "Done"]
+                          THEN /\ pc' = [pc EXCEPT ![self] = "FPrepare"]
                                /\ UNCHANGED RepliesToLeader
-                          ELSE /\ \E qc \in {qc \in AllQC : qc.type = Prepare}:
+                          ELSE /\ \E qc \in GenerateAllQCForType(RepliesToLeader, Prepare):
                                     RepliesToLeader' = (                   RepliesToLeader \union {
                                                             CreateMessage(NewView, curView[self], Null, qc, self)
                                                         })
@@ -551,6 +582,64 @@ FNextView2(self) == /\ pc[self] = "FNextView2"
                                     BroadcastMessages, curView_, leader_, 
                                     prepareQC, lockedQC, commitQC, 
                                     committedBlocks, receivedVotes, curView >>
+
+FPrepare(self) == /\ pc[self] = "FPrepare"
+                  /\ \E qc \in GenerateAllQCForType(RepliesToLeader, Prepare):
+                       LET newBlock == CreateBlock(NextBlockId, qc.block) IN
+                         /\ NextBlockId' = NextBlockId + 1
+                         /\ AllBlocks' = (AllBlocks \union {newBlock})
+                         /\ BroadcastMessages' = (                 BroadcastMessages \union
+                                                  {CreateMessage(Prepare, curView[self], newBlock, qc, self)})
+                  /\ pc' = [pc EXCEPT ![self] = "FPreCommit"]
+                  /\ UNCHANGED << AllQC, RepliesToLeader, curView_, leader_, 
+                                  prepareQC, lockedQC, commitQC, 
+                                  committedBlocks, receivedVotes, curView, 
+                                  leader >>
+
+FPreCommit(self) == /\ pc[self] = "FPreCommit"
+                    /\ \/ /\ \E qc \in GenerateAllQCForType(RepliesToLeader, Prepare):
+                               BroadcastMessages' = (                 BroadcastMessages \union
+                                                     {CreateMessage(PreCommit, curView[self], Null, qc, self)})
+                          /\ pc' = [pc EXCEPT ![self] = "FCommit"]
+                       \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
+                          /\ UNCHANGED BroadcastMessages
+                    /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
+                                    RepliesToLeader, curView_, leader_, 
+                                    prepareQC, lockedQC, commitQC, 
+                                    committedBlocks, receivedVotes, curView, 
+                                    leader >>
+
+FCommit(self) == /\ pc[self] = "FCommit"
+                 /\ \/ /\ \E qc \in GenerateAllQCForType(RepliesToLeader, PreCommit):
+                            BroadcastMessages' = (                 BroadcastMessages \union
+                                                  {CreateMessage(Commit, curView[self], Null, qc, self)})
+                       /\ pc' = [pc EXCEPT ![self] = "FDecide"]
+                    \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
+                       /\ UNCHANGED BroadcastMessages
+                 /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
+                                 RepliesToLeader, curView_, leader_, prepareQC, 
+                                 lockedQC, commitQC, committedBlocks, 
+                                 receivedVotes, curView, leader >>
+
+FDecide(self) == /\ pc[self] = "FDecide"
+                 /\ \/ /\ \E qc \in GenerateAllQCForType(RepliesToLeader, Commit):
+                            BroadcastMessages' = (                 BroadcastMessages \union
+                                                  {CreateMessage(Decide, curView[self], Null, qc, self)})
+                       /\ pc' = [pc EXCEPT ![self] = "FLeaderDone"]
+                    \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
+                       /\ UNCHANGED BroadcastMessages
+                 /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
+                                 RepliesToLeader, curView_, leader_, prepareQC, 
+                                 lockedQC, commitQC, committedBlocks, 
+                                 receivedVotes, curView, leader >>
+
+FLeaderDone(self) == /\ pc[self] = "FLeaderDone"
+                     /\ pc' = [pc EXCEPT ![self] = "FNextView"]
+                     /\ UNCHANGED << NextBlockId, AllBlocks, AllQC, 
+                                     BroadcastMessages, RepliesToLeader, 
+                                     curView_, leader_, prepareQC, lockedQC, 
+                                     commitQC, committedBlocks, receivedVotes, 
+                                     curView, leader >>
 
 FReplicaPrepare(self) == /\ pc[self] = "FReplicaPrepare"
                          /\ \/ /\ \E b \in AllBlocks:
@@ -605,7 +694,7 @@ FReplicaCommit(self) == /\ pc[self] = "FReplicaCommit"
                                    RepliesToLeader' = (                   RepliesToLeader \union {
                                                            CreateMessage(Commit, curView[self], b, Null, self)
                                                        })
-                              /\ pc' = [pc EXCEPT ![self] = "Done"]
+                              /\ pc' = [pc EXCEPT ![self] = "FNextView"]
                               /\ UNCHANGED <<NextBlockId, AllBlocks>>
                            \/ /\ \E p \in AllBlocks:
                                    LET b == CreateBlock(NextBlockId, p) IN
@@ -614,7 +703,7 @@ FReplicaCommit(self) == /\ pc[self] = "FReplicaCommit"
                                      /\ RepliesToLeader' = (                   RepliesToLeader \union {
                                                                 CreateMessage(Prepare, curView[self], b, Null, self)
                                                             })
-                              /\ pc' = [pc EXCEPT ![self] = "Done"]
+                              /\ pc' = [pc EXCEPT ![self] = "FNextView"]
                            \/ /\ pc' = [pc EXCEPT ![self] = "FNextView"]
                               /\ UNCHANGED <<NextBlockId, AllBlocks, RepliesToLeader>>
                         /\ UNCHANGED << AllQC, BroadcastMessages, curView_, 
@@ -622,9 +711,10 @@ FReplicaCommit(self) == /\ pc[self] = "FReplicaCommit"
                                         committedBlocks, receivedVotes, 
                                         curView, leader >>
 
-faulty(self) == FNextView(self) \/ FNextView2(self)
-                   \/ FReplicaPrepare(self) \/ FReplicaPreCommit(self)
-                   \/ FReplicaCommit(self)
+faulty(self) == FNextView(self) \/ FNextView2(self) \/ FPrepare(self)
+                   \/ FPreCommit(self) \/ FCommit(self) \/ FDecide(self)
+                   \/ FLeaderDone(self) \/ FReplicaPrepare(self)
+                   \/ FReplicaPreCommit(self) \/ FReplicaCommit(self)
 
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"

@@ -12,7 +12,7 @@ ASSUME
     /\ Nodes # {}
     /\ Leaders \in Seq(Nodes)
     /\ GST < NumEpochs
-    /\ Cardinality(CorrectNodes) > 2 * Cardinality(FaultyNodes)
+    \* /\ Cardinality(CorrectNodes) > 2 * Cardinality(FaultyNodes)
 
 Range(f) == { f[x] : x \in DOMAIN f }
 
@@ -89,30 +89,31 @@ begin
 end process;
 
 fair process byzantine \in FaultyNodes
+variable
+    numBlocksProposedAsLeader = 0;
 begin
     ByzStart:
         while localEpochs[self] = curEpoch do
-            if Leaders[curEpoch] = self then
-                \* choose random parent to build on, regardless if it's the longest notarized chaintip
-                with parent \in ReceivedBlocksBy(self) do
+            if Leaders[curEpoch] = self /\ numBlocksProposedAsLeader < 2 then
+                \* can propose two conflicting blocks, but always extending from notarized blocks
+                with parent \in LongestNotarizedChainTips(localMsgs[self]) do
                     CreateBlock(curEpoch, parent);
                     SendMsg(newBlock);
+                    numBlocksProposedAsLeader := numBlocksProposedAsLeader + 1;
                 end with;
             else
                 with m \in UnreceivedMsgsBy(self) do 
                     if ~AlreadyVoted(m.block, self) then
-                        \* randomly choose to vote on block (if haven't voted before)
-                        either
-                            SendMsg(m.block);
-                        or
-                            RecvMsg(m);
-                        end either;
+                        \* simplification: always vote on every block, extreme equivocation 
+                        SendMsg(m.block);
                     else
                         RecvMsg(m);
                     end if;
                 end with;
             end if;
         end while;    
+
+        numBlocksProposedAsLeader := 0;
 
         \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
         if curEpoch <= NumEpochs then
@@ -136,7 +137,7 @@ begin
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "94ca13d9" /\ chksum(tla) = "21b3cccf")
+\* BEGIN TRANSLATION (chksum(pcal) = "ae996713" /\ chksum(tla) = "2489e9a6")
 VARIABLES sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
 
 (* define statement *)
@@ -151,9 +152,10 @@ NewProposal(m, node) == /\ m.block.epoch = curEpoch
                         /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
 Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 
+VARIABLE numBlocksProposedAsLeader
 
-vars == << sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
-        >>
+vars == << sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc, 
+           numBlocksProposedAsLeader >>
 
 ProcSet == (CorrectNodes) \cup (FaultyNodes) \cup {"timer"}
 
@@ -164,6 +166,8 @@ Init == (* Global variables *)
         /\ localEpochs = [r \in Nodes |-> curEpoch]
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
+        (* Process byzantine *)
+        /\ numBlocksProposedAsLeader = [self \in FaultyNodes |-> 0]
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Start"
                                         [] self \in FaultyNodes -> "ByzStart"
                                         [] self = "timer" -> "NextRound"]
@@ -194,32 +198,33 @@ Start(self) == /\ pc[self] = "Start"
                                      /\ UNCHANGED localEpochs
                           /\ UNCHANGED << sent, localMsgs, nextBlockId, 
                                           newBlock >>
-               /\ UNCHANGED curEpoch
+               /\ UNCHANGED << curEpoch, numBlocksProposedAsLeader >>
 
 honest(self) == Start(self)
 
 ByzStart(self) == /\ pc[self] = "ByzStart"
                   /\ IF localEpochs[self] = curEpoch
-                        THEN /\ IF Leaders[curEpoch] = self
-                                   THEN /\ \E parent \in ReceivedBlocksBy(self):
+                        THEN /\ IF Leaders[curEpoch] = self /\ numBlocksProposedAsLeader[self] < 2
+                                   THEN /\ \E parent \in LongestNotarizedChainTips(localMsgs[self]):
                                              /\ newBlock' = [id |-> nextBlockId, epoch |-> curEpoch, parent |-> parent.id]
                                              /\ nextBlockId' = nextBlockId + 1
                                              /\ LET msg == [block |-> newBlock', vote |-> self] IN
                                                   /\ sent' = (sent \union {msg})
                                                   /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                             /\ numBlocksProposedAsLeader' = [numBlocksProposedAsLeader EXCEPT ![self] = numBlocksProposedAsLeader[self] + 1]
                                    ELSE /\ \E m \in UnreceivedMsgsBy(self):
                                              IF ~AlreadyVoted(m.block, self)
-                                                THEN /\ \/ /\ LET msg == [block |-> (m.block), vote |-> self] IN
-                                                                /\ sent' = (sent \union {msg})
-                                                                /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
-                                                        \/ /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
-                                                           /\ sent' = sent
+                                                THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
+                                                          /\ sent' = (sent \union {msg})
+                                                          /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
                                                 ELSE /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
                                                      /\ sent' = sent
-                                        /\ UNCHANGED << nextBlockId, newBlock >>
+                                        /\ UNCHANGED << nextBlockId, newBlock, 
+                                                        numBlocksProposedAsLeader >>
                              /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
                              /\ UNCHANGED localEpochs
-                        ELSE /\ IF curEpoch <= NumEpochs
+                        ELSE /\ numBlocksProposedAsLeader' = [numBlocksProposedAsLeader EXCEPT ![self] = 0]
+                             /\ IF curEpoch <= NumEpochs
                                    THEN /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
                                         /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
                                    ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
@@ -242,7 +247,7 @@ NextRound == /\ pc["timer"] = "NextRound"
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED curEpoch
              /\ UNCHANGED << sent, localMsgs, localEpochs, nextBlockId, 
-                             newBlock >>
+                             newBlock, numBlocksProposedAsLeader >>
 
 Timer == NextRound
 

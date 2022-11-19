@@ -12,7 +12,7 @@ ASSUME
     /\ Nodes # {}
     /\ Leaders \in Seq(Nodes)
     /\ GST < NumEpochs
-    \* /\ Cardinality(CorrectNodes) > 2 * Cardinality(FaultyNodes)
+    /\ Cardinality(CorrectNodes) > 2 * Cardinality(FaultyNodes)
 
 Range(f) == { f[x] : x \in DOMAIN f }
 
@@ -25,12 +25,17 @@ variables
     localEpochs = [r \in Nodes |-> curEpoch];
     nextBlockId = 1;
     newBlock = GenesisBlock;
+    \* a signal for timer to know when to move forward w.r.t. arbitrary bzyantine node
+    semaphore = [r \in FaultyNodes |-> FALSE];
 
 define
     ReceivedBlocksBy(node) == LET msgs == localMsgs[node] IN { m.block: m \in msgs }
     UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
     AlreadyProposed(node) == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = node
     LeaderProposed == AlreadyProposed(Leaders[curEpoch])
+    NumBlocksLeaderProposed == 
+        LET proposed == {m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]}
+        IN Cardinality(proposed)
     AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
     BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
     NewProposal(m, node) == /\ m.block.epoch = curEpoch
@@ -89,18 +94,24 @@ begin
 end process;
 
 fair process byzantine \in FaultyNodes
-variable
-    numBlocksProposedAsLeader = 0;
 begin
     ByzStart:
         while localEpochs[self] = curEpoch do
-            if Leaders[curEpoch] = self /\ numBlocksProposedAsLeader < 2 then
+            if Leaders[curEpoch] = self /\ NumBlocksLeaderProposed < 2 then
                 \* can propose two conflicting blocks, but always extending from notarized blocks
                 with parent \in LongestNotarizedChainTips(localMsgs[self]) do
                     CreateBlock(curEpoch, parent);
                     SendMsg(newBlock);
-                    numBlocksProposedAsLeader := numBlocksProposedAsLeader + 1;
                 end with;
+            elsif 
+                \* condition on which byzantine node agree to move on
+                \* this varies from different modeling of the byzantine behaviors
+                /\ Leaders[curEpoch] = self => NumBlocksLeaderProposed = 2 
+                /\ Leaders[curEpoch] \in CorrectNodes => NumBlocksLeaderProposed = 1
+                /\ curEpoch >= GST => 
+                    /\ \A m \in sent: CorrectNodes \subseteq Receivers(m)
+                    /\ Cardinality(UnreceivedMsgsBy(self)) = 0 then
+                semaphore[self] := TRUE;
             else
                 with m \in UnreceivedMsgsBy(self) do 
                     if ~AlreadyVoted(m.block, self) then
@@ -113,11 +124,10 @@ begin
             end if;
         end while;    
 
-        numBlocksProposedAsLeader := 0;
-
         \* If timer advanced and local replica are out-of-sync, then Sync Epoch first.
         if curEpoch <= NumEpochs then
             localEpochs[self] := localEpochs[self] + 1;
+            semaphore[self] := FALSE;
             goto ByzStart;
         end if;
 end process
@@ -130,21 +140,27 @@ begin
                   /\ Leaders[curEpoch] \in CorrectNodes => LeaderProposed;
             
             if curEpoch >= GST then
-                await \A m \in sent: (m.block.epoch <= curEpoch) => (CorrectNodes \subseteq Receivers(m));
+                await \A m \in sent: CorrectNodes \subseteq Receivers(m);
             end if;
+
+            await \A r \in FaultyNodes: semaphore[r] = TRUE;
 
             curEpoch := curEpoch + 1;
         end while;
 end process;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "ae996713" /\ chksum(tla) = "2489e9a6")
-VARIABLES sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc
+\* BEGIN TRANSLATION (chksum(pcal) = "eed50870" /\ chksum(tla) = "76bfe3be")
+VARIABLES sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, 
+          semaphore, pc
 
 (* define statement *)
 ReceivedBlocksBy(node) == LET msgs == localMsgs[node] IN { m.block: m \in msgs }
 UnreceivedMsgsBy(node) == {m \in sent: m \notin localMsgs[node]}
 AlreadyProposed(node) == \E m \in sent: m.block.epoch = curEpoch /\ m.vote = node
 LeaderProposed == AlreadyProposed(Leaders[curEpoch])
+NumBlocksLeaderProposed ==
+    LET proposed == {m \in sent: m.block.epoch = curEpoch /\ m.vote = Leaders[curEpoch]}
+    IN Cardinality(proposed)
 AlreadyVoted(block, node) == \E m \in sent: m.block = block /\ m.vote = node
 BlocksVotedBy(node) == LET msgs == {m \in sent: m.vote = node} IN {m.block: m \in msgs}
 NewProposal(m, node) == /\ m.block.epoch = curEpoch
@@ -152,10 +168,9 @@ NewProposal(m, node) == /\ m.block.epoch = curEpoch
                         /\ m.block.parent \in { l.id: l \in LongestNotarizedChainTips(localMsgs[node]) }
 Receivers(m) == {r \in Nodes: m \in localMsgs[r]}
 
-VARIABLE numBlocksProposedAsLeader
 
-vars == << sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, pc, 
-           numBlocksProposedAsLeader >>
+vars == << sent, curEpoch, localMsgs, localEpochs, nextBlockId, newBlock, 
+           semaphore, pc >>
 
 ProcSet == (CorrectNodes) \cup (FaultyNodes) \cup {"timer"}
 
@@ -166,8 +181,7 @@ Init == (* Global variables *)
         /\ localEpochs = [r \in Nodes |-> curEpoch]
         /\ nextBlockId = 1
         /\ newBlock = GenesisBlock
-        (* Process byzantine *)
-        /\ numBlocksProposedAsLeader = [self \in FaultyNodes |-> 0]
+        /\ semaphore = [r \in FaultyNodes |-> FALSE]
         /\ pc = [self \in ProcSet |-> CASE self \in CorrectNodes -> "Start"
                                         [] self \in FaultyNodes -> "ByzStart"
                                         [] self = "timer" -> "NextRound"]
@@ -198,37 +212,45 @@ Start(self) == /\ pc[self] = "Start"
                                      /\ UNCHANGED localEpochs
                           /\ UNCHANGED << sent, localMsgs, nextBlockId, 
                                           newBlock >>
-               /\ UNCHANGED << curEpoch, numBlocksProposedAsLeader >>
+               /\ UNCHANGED << curEpoch, semaphore >>
 
 honest(self) == Start(self)
 
 ByzStart(self) == /\ pc[self] = "ByzStart"
                   /\ IF localEpochs[self] = curEpoch
-                        THEN /\ IF Leaders[curEpoch] = self /\ numBlocksProposedAsLeader[self] < 2
+                        THEN /\ IF Leaders[curEpoch] = self /\ NumBlocksLeaderProposed < 2
                                    THEN /\ \E parent \in LongestNotarizedChainTips(localMsgs[self]):
                                              /\ newBlock' = [id |-> nextBlockId, epoch |-> curEpoch, parent |-> parent.id]
                                              /\ nextBlockId' = nextBlockId + 1
                                              /\ LET msg == [block |-> newBlock', vote |-> self] IN
                                                   /\ sent' = (sent \union {msg})
                                                   /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
-                                             /\ numBlocksProposedAsLeader' = [numBlocksProposedAsLeader EXCEPT ![self] = numBlocksProposedAsLeader[self] + 1]
-                                   ELSE /\ \E m \in UnreceivedMsgsBy(self):
-                                             IF ~AlreadyVoted(m.block, self)
-                                                THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
-                                                          /\ sent' = (sent \union {msg})
-                                                          /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
-                                                ELSE /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
-                                                     /\ sent' = sent
-                                        /\ UNCHANGED << nextBlockId, newBlock, 
-                                                        numBlocksProposedAsLeader >>
+                                        /\ UNCHANGED semaphore
+                                   ELSE /\ IF /\ Leaders[curEpoch] = self => NumBlocksLeaderProposed = 2
+                                              /\ Leaders[curEpoch] \in CorrectNodes => NumBlocksLeaderProposed = 1
+                                              /\ curEpoch >= GST =>
+                                                  /\ \A m \in sent: CorrectNodes \subseteq Receivers(m)
+                                                  /\ Cardinality(UnreceivedMsgsBy(self)) = 0
+                                              THEN /\ semaphore' = [semaphore EXCEPT ![self] = TRUE]
+                                                   /\ UNCHANGED << sent, 
+                                                                   localMsgs >>
+                                              ELSE /\ \E m \in UnreceivedMsgsBy(self):
+                                                        IF ~AlreadyVoted(m.block, self)
+                                                           THEN /\ LET msg == [block |-> (m.block), vote |-> self] IN
+                                                                     /\ sent' = (sent \union {msg})
+                                                                     /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {msg}]
+                                                           ELSE /\ localMsgs' = [localMsgs EXCEPT ![self] = @ \union {m}]
+                                                                /\ sent' = sent
+                                                   /\ UNCHANGED semaphore
+                                        /\ UNCHANGED << nextBlockId, newBlock >>
                              /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
                              /\ UNCHANGED localEpochs
-                        ELSE /\ numBlocksProposedAsLeader' = [numBlocksProposedAsLeader EXCEPT ![self] = 0]
-                             /\ IF curEpoch <= NumEpochs
+                        ELSE /\ IF curEpoch <= NumEpochs
                                    THEN /\ localEpochs' = [localEpochs EXCEPT ![self] = localEpochs[self] + 1]
+                                        /\ semaphore' = [semaphore EXCEPT ![self] = FALSE]
                                         /\ pc' = [pc EXCEPT ![self] = "ByzStart"]
                                    ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                                        /\ UNCHANGED localEpochs
+                                        /\ UNCHANGED << localEpochs, semaphore >>
                              /\ UNCHANGED << sent, localMsgs, nextBlockId, 
                                              newBlock >>
                   /\ UNCHANGED curEpoch
@@ -240,14 +262,15 @@ NextRound == /\ pc["timer"] = "NextRound"
                    THEN /\ /\ \A r \in Nodes: localEpochs[r] = curEpoch
                            /\ Leaders[curEpoch] \in CorrectNodes => LeaderProposed
                         /\ IF curEpoch >= GST
-                              THEN /\ \A m \in sent: (m.block.epoch <= curEpoch) => (CorrectNodes \subseteq Receivers(m))
+                              THEN /\ \A m \in sent: CorrectNodes \subseteq Receivers(m)
                               ELSE /\ TRUE
+                        /\ \A r \in FaultyNodes: semaphore[r] = TRUE
                         /\ curEpoch' = curEpoch + 1
                         /\ pc' = [pc EXCEPT !["timer"] = "NextRound"]
                    ELSE /\ pc' = [pc EXCEPT !["timer"] = "Done"]
                         /\ UNCHANGED curEpoch
              /\ UNCHANGED << sent, localMsgs, localEpochs, nextBlockId, 
-                             newBlock, numBlocksProposedAsLeader >>
+                             newBlock, semaphore >>
 
 Timer == NextRound
 
@@ -279,6 +302,14 @@ TypeOK ==
 
 \* all received messages should come from sent messages, not out of the blue
 OnlyRecvSentMsgs == [](\A r \in Nodes: \A m \in localMsgs[r]: m \in sent \/ m.block = GenesisBlock)
+
+NumOfProposalCorrectness == [](
+    [curEpoch' > curEpoch /\ curEpoch <= NumEpochs =>
+        \/ Leaders[curEpoch] \in CorrectNodes /\ NumBlocksLeaderProposed = 1
+        \* the following condition is specific to this version of the restricted byzantine node
+        \/ Leaders[curEpoch] \in FaultyNodes /\ NumBlocksLeaderProposed = 2
+    ]_curEpoch
+)
 
 \* each block should have unique id, namely any two blocks with the same id should be identical
 UniqueBlockId ==

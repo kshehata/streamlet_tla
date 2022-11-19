@@ -6,16 +6,20 @@ CONSTANT Leaders, Correct, Faulty
 
 ASSUME Leaders \in Seq(Replicas)
 
+Block1 == CreateBlock(1, GenesisBlock)
+Block1QC(type) == [ type |-> type, viewNum |-> 1, block |-> Block1 ]
+
 (* --algorithm hotstuff
 variables
     \* DO NOT MODIFY DIRECTLY! Should only be used in ProposeNewBlock
-    NextBlockId = 1;
+    NextBlockId = 2;
 
     \* Global cache of all blocks, assumed in paper that all nodes can just get all blocks.
-    AllBlocks = {GenesisBlock};
+    AllBlocks = {GenesisBlock, Block1};
 
-    \* All QC in system, ued for byzantine replicas
-    AllQC = {GenesisQC(phase) : phase \in {Prepare, PreCommit, Commit}};
+    \* All QC in system, used for byzantine replicas
+    AllQC = {GenesisQC(phase) : phase \in {Prepare, PreCommit, Commit}}
+            \union {Block1QC(phase) : phase \in {Prepare, PreCommit, Commit}};
 
     \* All messages sent by leader to all replicas
     BroadcastMessages = {};
@@ -100,14 +104,14 @@ end macro;
 
 fair process rep \in Correct
 variables
-    curView = 0;
+    curView = 1;
     leader = Leaders[1];
-    prepareQC = GenesisQC(Prepare);
-    lockedQC = GenesisQC(PreCommit);
+    prepareQC = Block1QC(Prepare);
+    lockedQC = Block1QC(PreCommit);
     \* Only used as a temporary, but makes life easier
-    commitQC = GenesisQC(Commit);
+    commitQC = Block1QC(Commit);
     \* Blocks commited in view of this replica
-    committedBlocks = {};
+    committedBlocks = {Block1};
     \* Only used by the leader to keep votes received in the current phase
     receivedVotes = {};
 
@@ -223,7 +227,7 @@ end process;
 
 fair process faulty \in Faulty
 variables
-    curView = 0;
+    curView = 1;
     leader = Leaders[1];
 
 begin
@@ -331,9 +335,9 @@ FReplicaCommit:
 end process;
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "e3686e5a" /\ chksum(tla) = "52873190")
-\* Process variable curView of process rep at line 103 col 5 changed to curView_
-\* Process variable leader of process rep at line 104 col 5 changed to leader_
+\* BEGIN TRANSLATION (chksum(pcal) = "705015af" /\ chksum(tla) = "8ae14864")
+\* Process variable curView of process rep at line 107 col 5 changed to curView_
+\* Process variable leader of process rep at line 108 col 5 changed to leader_
 VARIABLES NextBlockId, AllBlocks, AllQC, BroadcastMessages, RepliesToLeader, 
           pc
 
@@ -353,21 +357,22 @@ vars == << NextBlockId, AllBlocks, AllQC, BroadcastMessages, RepliesToLeader,
 ProcSet == (Correct) \cup (Faulty)
 
 Init == (* Global variables *)
-        /\ NextBlockId = 1
-        /\ AllBlocks = {GenesisBlock}
+        /\ NextBlockId = 2
+        /\ AllBlocks = {GenesisBlock, Block1}
         /\ AllQC = {GenesisQC(phase) : phase \in {Prepare, PreCommit, Commit}}
+                   \union {Block1QC(phase) : phase \in {Prepare, PreCommit, Commit}}
         /\ BroadcastMessages = {}
         /\ RepliesToLeader = {}
         (* Process rep *)
-        /\ curView_ = [self \in Correct |-> 0]
+        /\ curView_ = [self \in Correct |-> 1]
         /\ leader_ = [self \in Correct |-> Leaders[1]]
-        /\ prepareQC = [self \in Correct |-> GenesisQC(Prepare)]
-        /\ lockedQC = [self \in Correct |-> GenesisQC(PreCommit)]
-        /\ commitQC = [self \in Correct |-> GenesisQC(Commit)]
-        /\ committedBlocks = [self \in Correct |-> {}]
+        /\ prepareQC = [self \in Correct |-> Block1QC(Prepare)]
+        /\ lockedQC = [self \in Correct |-> Block1QC(PreCommit)]
+        /\ commitQC = [self \in Correct |-> Block1QC(Commit)]
+        /\ committedBlocks = [self \in Correct |-> {Block1}]
         /\ receivedVotes = [self \in Correct |-> {}]
         (* Process faulty *)
-        /\ curView = [self \in Faulty |-> 0]
+        /\ curView = [self \in Faulty |-> 1]
         /\ leader = [self \in Faulty |-> Leaders[1]]
         /\ pc = [self \in ProcSet |-> CASE self \in Correct -> "NextView"
                                         [] self \in Faulty -> "FNextView"]
@@ -410,7 +415,7 @@ WaitForNewView(self) == /\ pc[self] = "WaitForNewView"
                                                    BroadcastMessages, 
                                                    RepliesToLeader, prepareQC >>
                               ELSE /\ Assert(Cardinality(receivedVotes[self]) >= QCThresh, 
-                                             "Failure of assertion at line 143, column 5.")
+                                             "Failure of assertion at line 147, column 5.")
                                    /\ prepareQC' = [prepareQC EXCEPT ![self] = MaxJustifyVN(receivedVotes[self]).justify]
                                    /\ LET newBlock == CreateBlock(NextBlockId, prepareQC'[self].block) IN
                                         /\ NextBlockId' = NextBlockId + 1
@@ -436,7 +441,7 @@ LeaderPreCommit(self) == /\ pc[self] = "LeaderPreCommit"
                                     /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                     RepliesToLeader, prepareQC >>
                                ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                              "Failure of assertion at line 76, column 5 of macro called at line 149, column 5.")
+                                              "Failure of assertion at line 80, column 5 of macro called at line 153, column 5.")
                                     /\ prepareQC' = [prepareQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                     /\ AllQC' = (AllQC \union {prepareQC'[self]})
                                     /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -463,7 +468,7 @@ LeaderCommit(self) == /\ pc[self] = "LeaderCommit"
                                  /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                  RepliesToLeader, lockedQC >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 76, column 5 of macro called at line 153, column 5.")
+                                           "Failure of assertion at line 80, column 5 of macro called at line 157, column 5.")
                                  /\ lockedQC' = [lockedQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {lockedQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -491,7 +496,7 @@ LeaderDecide(self) == /\ pc[self] = "LeaderDecide"
                                                  RepliesToLeader, commitQC, 
                                                  committedBlocks >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 76, column 5 of macro called at line 157, column 5.")
+                                           "Failure of assertion at line 80, column 5 of macro called at line 161, column 5.")
                                  /\ commitQC' = [commitQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {commitQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union

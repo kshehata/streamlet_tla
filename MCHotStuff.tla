@@ -8,6 +8,6 @@ ConstFaulty == {r4}
 ReplicaPerms == Permutations(ConstCorrect)
 ConstReplicas == ConstCorrect \union ConstFaulty
 
-ConstLeaders == <<r3>>
+ConstLeaders == <<r1, r2>>
 
 =============================================================================

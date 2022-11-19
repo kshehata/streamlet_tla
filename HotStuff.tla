@@ -57,8 +57,8 @@ macro ProposeNewBlock(justifyQC) begin
         NextBlockId := NextBlockId + 1;
         AllBlocks := AllBlocks \union {newBlock};
         SendBroadcast(Prepare, newBlock, justifyQC);
-        \* Clear out old votes, and vote for your own proposal
-        receivedVotes := { CreateMessage(Prepare, curView, newBlock, Null, self) };
+            \* Clear out old votes, and vote for your own proposal
+            receivedVotes := { CreateMessage(Prepare, curView, newBlock, Null, self) };
         ReplyWithVote(Prepare, newBlock);
     end with;
 end macro;
@@ -67,7 +67,10 @@ macro WaitForVotes(voteType) begin
     while ~CheckVotesForQC(receivedVotes) do
         either
             with m \in { m \in RepliesToLeader : m.type = voteType /\ m.viewNum = curView } do
-                receivedVotes := receivedVotes \union {m};
+                \* Ignore votes that have the wrong block set
+                if \A v \in receivedVotes : m.block = v.block then
+                    receivedVotes := receivedVotes \union {m};
+                end if;
             end with;
         or
             \* At any point timeout and go to NextView
@@ -335,9 +338,9 @@ FReplicaCommit:
 end process;
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "705015af" /\ chksum(tla) = "8ae14864")
-\* Process variable curView of process rep at line 107 col 5 changed to curView_
-\* Process variable leader of process rep at line 108 col 5 changed to leader_
+\* BEGIN TRANSLATION (chksum(pcal) = "543c49af" /\ chksum(tla) = "39b910db")
+\* Process variable curView of process rep at line 110 col 5 changed to curView_
+\* Process variable leader of process rep at line 111 col 5 changed to leader_
 VARIABLES NextBlockId, AllBlocks, AllQC, BroadcastMessages, RepliesToLeader, 
           pc
 
@@ -415,7 +418,7 @@ WaitForNewView(self) == /\ pc[self] = "WaitForNewView"
                                                    BroadcastMessages, 
                                                    RepliesToLeader, prepareQC >>
                               ELSE /\ Assert(Cardinality(receivedVotes[self]) >= QCThresh, 
-                                             "Failure of assertion at line 147, column 5.")
+                                             "Failure of assertion at line 150, column 5.")
                                    /\ prepareQC' = [prepareQC EXCEPT ![self] = MaxJustifyVN(receivedVotes[self]).justify]
                                    /\ LET newBlock == CreateBlock(NextBlockId, prepareQC'[self].block) IN
                                         /\ NextBlockId' = NextBlockId + 1
@@ -434,14 +437,17 @@ WaitForNewView(self) == /\ pc[self] = "WaitForNewView"
 LeaderPreCommit(self) == /\ pc[self] = "LeaderPreCommit"
                          /\ IF ~CheckVotesForQC(receivedVotes[self])
                                THEN /\ \/ /\ \E m \in { m \in RepliesToLeader : m.type = Prepare /\ m.viewNum = curView_[self] }:
-                                               receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                               IF \A v \in receivedVotes[self] : m.block = v.block
+                                                  THEN /\ receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                                  ELSE /\ TRUE
+                                                       /\ UNCHANGED receivedVotes
                                           /\ pc' = [pc EXCEPT ![self] = "LeaderPreCommit"]
                                        \/ /\ pc' = [pc EXCEPT ![self] = "NextView"]
                                           /\ UNCHANGED receivedVotes
                                     /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                     RepliesToLeader, prepareQC >>
                                ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                              "Failure of assertion at line 80, column 5 of macro called at line 153, column 5.")
+                                              "Failure of assertion at line 83, column 5 of macro called at line 156, column 5.")
                                     /\ prepareQC' = [prepareQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                     /\ AllQC' = (AllQC \union {prepareQC'[self]})
                                     /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -461,14 +467,17 @@ LeaderPreCommit(self) == /\ pc[self] = "LeaderPreCommit"
 LeaderCommit(self) == /\ pc[self] = "LeaderCommit"
                       /\ IF ~CheckVotesForQC(receivedVotes[self])
                             THEN /\ \/ /\ \E m \in { m \in RepliesToLeader : m.type = PreCommit /\ m.viewNum = curView_[self] }:
-                                            receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                            IF \A v \in receivedVotes[self] : m.block = v.block
+                                               THEN /\ receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                               ELSE /\ TRUE
+                                                    /\ UNCHANGED receivedVotes
                                        /\ pc' = [pc EXCEPT ![self] = "LeaderCommit"]
                                     \/ /\ pc' = [pc EXCEPT ![self] = "NextView"]
                                        /\ UNCHANGED receivedVotes
                                  /\ UNCHANGED << AllQC, BroadcastMessages, 
                                                  RepliesToLeader, lockedQC >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 80, column 5 of macro called at line 157, column 5.")
+                                           "Failure of assertion at line 83, column 5 of macro called at line 160, column 5.")
                                  /\ lockedQC' = [lockedQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {lockedQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union
@@ -488,7 +497,10 @@ LeaderCommit(self) == /\ pc[self] = "LeaderCommit"
 LeaderDecide(self) == /\ pc[self] = "LeaderDecide"
                       /\ IF ~CheckVotesForQC(receivedVotes[self])
                             THEN /\ \/ /\ \E m \in { m \in RepliesToLeader : m.type = Commit /\ m.viewNum = curView_[self] }:
-                                            receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                            IF \A v \in receivedVotes[self] : m.block = v.block
+                                               THEN /\ receivedVotes' = [receivedVotes EXCEPT ![self] = receivedVotes[self] \union {m}]
+                                               ELSE /\ TRUE
+                                                    /\ UNCHANGED receivedVotes
                                        /\ pc' = [pc EXCEPT ![self] = "LeaderDecide"]
                                     \/ /\ pc' = [pc EXCEPT ![self] = "NextView"]
                                        /\ UNCHANGED receivedVotes
@@ -496,7 +508,7 @@ LeaderDecide(self) == /\ pc[self] = "LeaderDecide"
                                                  RepliesToLeader, commitQC, 
                                                  committedBlocks >>
                             ELSE /\ Assert(CheckVotesForQC(receivedVotes[self]), 
-                                           "Failure of assertion at line 80, column 5 of macro called at line 161, column 5.")
+                                           "Failure of assertion at line 83, column 5 of macro called at line 164, column 5.")
                                  /\ commitQC' = [commitQC EXCEPT ![self] = GenerateQC(receivedVotes[self])]
                                  /\ AllQC' = (AllQC \union {commitQC'[self]})
                                  /\ BroadcastMessages' = (                 BroadcastMessages \union

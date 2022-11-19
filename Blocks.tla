@@ -100,21 +100,6 @@ GenerateAllQCForType(Messages, type) == {
     }
 } \union {GenesisQC(type)}
 
-GenerateAllQCs(Messages) == {
-    GenerateQC(votes) : votes \in {
-        votes \in {
-            { v \in Messages : v.type = m.type /\ v.viewNum = m.viewNum }
-                : m \in Messages }
-            : CheckVotesForQC(votes)
-        }
-    }
-
-\* MissingQCViews(Messages) == { vn \in 1..99 : \E phase \in {Prepare, PreCommit, Commit} : 
-\*     CheckVotesForQC({ m \in Messages : m.type = phase /\ m.viewNum = vn })}
-
-\* GenerateMissingQCs(Messages, ExistingQCs) ==
-\*     { GenerateQC(votes) : votes \in }
-
 (***************************************************************************)
 (* Messages *)
 (***************************************************************************)

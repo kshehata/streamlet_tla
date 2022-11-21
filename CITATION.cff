@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Shehata
+    given-names: Kareem
+  - family-names: Xiong
+    given-names: Alex
+title: "Streamlet and HotStuff TLA Models"
+version: 0.0.1
+date-released: 2022-11-20

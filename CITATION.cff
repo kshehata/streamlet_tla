@@ -1,10 +1,14 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
+title: "Streamlet and HotStuff TLA Models"
+version: 0.0.1
+date-released: 2022-11-20type: software
 authors:
   - family-names: Shehata
     given-names: Kareem
+    email: kareem@comp.nus.edu.sg
+    affiliation: National University of Singapore
   - family-names: Xiong
     given-names: Alex
-title: "Streamlet and HotStuff TLA Models"
-version: 0.0.1
-date-released: 2022-11-20
+    email: xiong@comp.nus.edu.sg
+    affiliation: National University of Singapore
